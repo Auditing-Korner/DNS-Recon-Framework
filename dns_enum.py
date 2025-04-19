@@ -34,6 +34,8 @@ import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+import html
+import jinja2  # For HTML report generation
 
 try:
     import dns.resolver
@@ -41,6 +43,8 @@ try:
     import dns.query
     import dns.name
     import dns.reversename
+    import dns.dnssec  # Add explicit import for dnssec module
+    import dns.flags
     import requests
     from colorama import Fore, Style, init
     from tqdm import tqdm
@@ -246,11 +250,348 @@ CLOUD_PROVIDERS = {
     }
 }
 
+# SMTP/Email provider signatures
+EMAIL_PROVIDERS = {
+    "Google Workspace": {
+        "mx_patterns": [
+            r"aspmx\.l\.google\.com$",
+            r"alt[0-9]+\.aspmx\.l\.google\.com$",
+            r"smtp-relay\.gmail\.com$"
+        ],
+        "spf_includes": [
+            "include:_spf.google.com",
+            "include:_spf.smtp.gmail.com"
+        ],
+        "dmarc_recommended": "p=reject",
+        "additional_records": ["google-site-verification"]
+    },
+    "Microsoft 365": {
+        "mx_patterns": [
+            r".*\.mail\.protection\.outlook\.com$",
+            r".*\.mail\.onmicrosoft\.com$"
+        ],
+        "spf_includes": [
+            "include:spf.protection.outlook.com"
+        ],
+        "dmarc_recommended": "p=reject",
+        "additional_records": ["MS=ms"]
+    },
+    "Amazon SES": {
+        "mx_patterns": [
+            r"inbound-smtp\..*\.amazonaws\.com$"
+        ],
+        "spf_includes": [
+            "include:amazonses.com"
+        ],
+        "dmarc_recommended": "p=reject",
+        "additional_records": []
+    },
+    "Proofpoint": {
+        "mx_patterns": [
+            r".*\.pphosted\.com$"
+        ],
+        "spf_includes": [
+            "include:spf.protection.outlook.com"
+        ],
+        "dmarc_recommended": "p=reject",
+        "additional_records": []
+    },
+    "Mimecast": {
+        "mx_patterns": [
+            r".*\.mimecast\.com$"
+        ],
+        "spf_includes": [
+            "include:_netblocks.mimecast.com"
+        ],
+        "dmarc_recommended": "p=reject",
+        "additional_records": []
+    },
+    "Zoho": {
+        "mx_patterns": [
+            r"mx\.zoho\.com$",
+            r"mx[0-9]+\.zoho\.com$"
+        ],
+        "spf_includes": [
+            "include:zoho.com"
+        ],
+        "dmarc_recommended": "p=reject",
+        "additional_records": []
+    }
+}
+
+# Common SMTP security issues
+SMTP_SECURITY_CHECKS = {
+    "open_relay": {
+        "ports": [25, 587, 465],
+        "test_commands": [
+            "HELO test.com",
+            "MAIL FROM: test@test.com",
+            "RCPT TO: test@test.com",
+            "DATA",
+            "Subject: Test",
+            ".",
+            "QUIT"
+        ]
+    },
+    "starttls_required": {
+        "ports": [25, 587]
+    },
+    "banner_check": {
+        "dangerous_strings": [
+            "postfix",
+            "exim",
+            "sendmail",
+            "microsoft smtp server"
+        ]
+    }
+}
+
+# Common subdomain takeover signatures
+TAKEOVER_SIGNATURES = {
+    "AWS/S3": {
+        "signatures": [
+            "NoSuchBucket",
+            "The specified bucket does not exist",
+            "S3 Bucket not found"
+        ],
+        "cname_patterns": [
+            r"\.s3\.amazonaws\.com$",
+            r"\.s3-[a-z0-9-]+\.amazonaws\.com$"
+        ]
+    },
+    "GitHub Pages": {
+        "signatures": [
+            "There isn't a GitHub Pages site here",
+            "404: Not Found",
+            "No such app"
+        ],
+        "cname_patterns": [
+            r"\.github\.io$",
+            r"\.githubusercontent\.com$"
+        ]
+    },
+    "Heroku": {
+        "signatures": [
+            "No such app",
+            "herokucdn.com/error-pages/no-such-app.html",
+            "Nothing to see here",
+            "Building a brand new app"
+        ],
+        "cname_patterns": [
+            r"\.herokuapp\.com$",
+            r"\.herokudns\.com$"
+        ]
+    },
+    "Fastly": {
+        "signatures": [
+            "Fastly error: unknown domain",
+            "Unknown domain",
+            "Fatal Error"
+        ],
+        "cname_patterns": [
+            r"\.fastly\.net$"
+        ]
+    },
+    "Azure": {
+        "signatures": [
+            "404 Web Site not found",
+            "This web app has been stopped",
+            "This webpage is not available"
+        ],
+        "cname_patterns": [
+            r"\.azurewebsites\.net$",
+            r"\.cloudapp\.azure\.com$",
+            r"\.azure-api\.net$"
+        ]
+    },
+    "Zendesk": {
+        "signatures": [
+            "Help Center Closed",
+            "this help center no longer exists",
+            "Oops, this help center no longer exists"
+        ],
+        "cname_patterns": [
+            r"\.zendesk\.com$"
+        ]
+    },
+    "Shopify": {
+        "signatures": [
+            "Sorry, this shop is currently unavailable",
+            "Only one step left!",
+            "Sorry, we couldn't find that store"
+        ],
+        "cname_patterns": [
+            r"\.myshopify\.com$"
+        ]
+    },
+    "Squarespace": {
+        "signatures": [
+            "You're Almost There...",
+            "Website Has Expired",
+            "This domain is not configured"
+        ],
+        "cname_patterns": [
+            r"\.squarespace\.com$"
+        ]
+    },
+    "Wordpress": {
+        "signatures": [
+            "Do you want to register",
+            "Domain mapping upgrade for this domain not found",
+            "This domain is no longer available"
+        ],
+        "cname_patterns": [
+            r"\.wordpress\.com$",
+            r"\.wp\.com$"
+        ]
+    }
+}
+
+# Common sensitive files and endpoints to check
+SENSITIVE_FILES = {
+    "Source Code": [
+        "/.git/config",
+        "/.env",
+        "/.npmrc",
+        "/wp-config.php.bak",
+        "/.htaccess",
+        "/config.php.bak",
+        "/database.yml",
+        "/.svn/entries",
+        "/composer.json",
+        "/package.json",
+        "/Dockerfile",
+        "/docker-compose.yml"
+    ],
+    "Backups": [
+        "/backup.sql",
+        "/dump.sql",
+        "/backup.zip",
+        "/backup.tar.gz",
+        "/backup.tgz",
+        "/backup.7z",
+        "/db.sql",
+        "/*.bak",
+        "/*.backup",
+        "/*.old"
+    ],
+    "Configuration": [
+        "/phpinfo.php",
+        "/info.php",
+        "/config.php",
+        "/configuration.php",
+        "/settings.php",
+        "/admin/config",
+        "/admin/settings",
+        "/server-status",
+        "/nginx_status",
+        "/.well-known/security.txt"
+    ],
+    "Debug & Logs": [
+        "/debug.log",
+        "/error.log",
+        "/access.log",
+        "/debug.php",
+        "/console",
+        "/logs/",
+        "/.DS_Store",
+        "/robots.txt",
+        "/crossdomain.xml",
+        "/sitemap.xml"
+    ],
+    "API & Documentation": [
+        "/api/",
+        "/swagger",
+        "/swagger-ui.html",
+        "/api-docs",
+        "/graphql",
+        "/graphiql",
+        "/docs/",
+        "/readme.md",
+        "/README.md",
+        "/api/v1/",
+        "/api/v2/"
+    ],
+    "Admin & Management": [
+        "/admin",
+        "/administrator",
+        "/admin.php",
+        "/wp-admin",
+        "/phpmyadmin",
+        "/manager",
+        "/management",
+        "/jenkins",
+        "/jmx-console",
+        "/server-manager"
+    ]
+}
+
+# Security headers to check
+SECURITY_HEADERS = {
+    "Strict-Transport-Security": {
+        "description": "HSTS enforces secure (HTTPS) connections to the server",
+        "recommended": "max-age=31536000; includeSubDomains; preload"
+    },
+    "X-Frame-Options": {
+        "description": "Protects against clickjacking attacks",
+        "recommended": ["DENY", "SAMEORIGIN"]
+    },
+    "X-Content-Type-Options": {
+        "description": "Prevents MIME type sniffing",
+        "recommended": "nosniff"
+    },
+    "Content-Security-Policy": {
+        "description": "Prevents XSS and other injection attacks",
+        "recommended": "default-src 'self'"
+    },
+    "X-XSS-Protection": {
+        "description": "Enables browser XSS filtering",
+        "recommended": "1; mode=block"
+    },
+    "Referrer-Policy": {
+        "description": "Controls how much referrer information should be included",
+        "recommended": ["strict-origin", "strict-origin-when-cross-origin", "no-referrer"]
+    },
+    "Permissions-Policy": {
+        "description": "Controls which features and APIs can be used",
+        "recommended": "geolocation=(), microphone=()"
+    }
+}
+
 # DNS record types to check
 RECORD_TYPES = [
     'A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'PTR', 'SRV', 'CAA', 
     'DNSKEY', 'DS', 'NSEC', 'NSEC3', 'HTTPS', 'SVCB', 'DNAME'
 ]
+
+# DNSSEC record types to check
+DNSSEC_RECORD_TYPES = ['DNSKEY', 'DS', 'NSEC', 'NSEC3', 'NSEC3PARAM', 'RRSIG']
+
+# DNSSEC algorithm numbers and their meanings
+DNSSEC_ALGORITHMS = {
+    0: "Delete DS",
+    1: "RSA/MD5 (deprecated)",
+    2: "Diffie-Hellman",
+    3: "DSA/SHA1",
+    5: "RSA/SHA-1",
+    6: "DSA-NSEC3-SHA1",
+    7: "RSASHA1-NSEC3-SHA1",
+    8: "RSA/SHA-256",
+    10: "RSA/SHA-512",
+    12: "GOST R 34.10-2001",
+    13: "ECDSA Curve P-256 with SHA-256",
+    14: "ECDSA Curve P-384 with SHA-384",
+    15: "Ed25519",
+    16: "Ed448"
+}
+
+# DNSSEC digest types
+DNSSEC_DIGEST_TYPES = {
+    1: "SHA-1",
+    2: "SHA-256",
+    3: "GOST R 34.11-94",
+    4: "SHA-384"
+}
 
 # Public DNS servers to use for queries
 PUBLIC_DNS_SERVERS = [
@@ -281,12 +622,27 @@ def time_limit(seconds):
     def signal_handler(signum, frame):
         raise TimeoutError("Function timed out")
     
-    signal.signal(signal.SIGALRM, signal_handler)
-    signal.alarm(seconds)
-    try:
-        yield
-    finally:
-        signal.alarm(0)
+    # Use different timeout mechanisms for Windows vs Unix
+    if os.name == 'nt':  # Windows
+        import threading
+        result = []
+        def handler():
+            result.append(TimeoutError("Function timed out"))
+        timer = threading.Timer(seconds, handler)
+        timer.start()
+        try:
+            yield
+        finally:
+            timer.cancel()
+        if result:
+            raise result[0]
+    else:  # Unix
+        signal.signal(signal.SIGALRM, signal_handler)
+        signal.alarm(seconds)
+        try:
+            yield
+        finally:
+            signal.alarm(0)
 
 def handle_interrupt(signum, frame):
     """Handle SIGINT (Ctrl+C) gracefully"""
@@ -608,6 +964,29 @@ class DNSEnumerator:
                 if self.verbose:
                     print(f"{Fore.RED}[!] Error querying {record_type} records: {e}")
     
+        # Perform DNSSEC analysis
+        print(f"{Fore.BLUE}[*] Analyzing DNSSEC configuration...")
+        dnssec_results = self.analyze_dnssec(self.domain)
+        self.results["dnssec"] = dnssec_results
+        
+        if dnssec_results["enabled"]:
+            print(f"{Fore.GREEN}[+] DNSSEC is enabled")
+            
+            if dnssec_results["issues"]:
+                print(f"{Fore.RED}[!] DNSSEC Issues Found:")
+                for issue in dnssec_results["issues"]:
+                    print(f"{Fore.RED}    - {issue}")
+            
+            if self.verbose:
+                print(f"\n{Fore.BLUE}[*] DNSSEC Records:")
+                for record_type, records in dnssec_results["records"].items():
+                    print(f"\n{Fore.GREEN}    {record_type} Records:")
+                    for record in records:
+                        for key, value in record.items():
+                            print(f"{Fore.GREEN}        {key}: {value}")
+        else:
+            print(f"{Fore.YELLOW}[!] DNSSEC is not enabled")
+    
     def attempt_zone_transfer(self):
         """Attempt zone transfer against each nameserver"""
         if self.resume and self.results["zone_transfer"]["attempted"]:
@@ -855,6 +1234,27 @@ class DNSEnumerator:
             if provider:
                 result["provider"] = provider
                 
+            # Check for potential subdomain takeover
+            if cname:
+                takeover_info = self.check_subdomain_takeover(fqdn, cname)
+                if takeover_info:
+                    result["takeover_possible"] = takeover_info
+                    if self.verbose:
+                        print(f"{Fore.RED}[!] Potential subdomain takeover found: {fqdn}")
+                        print(f"{Fore.RED}    Provider: {takeover_info['provider']}")
+                        print(f"{Fore.RED}    CNAME: {takeover_info['cname']}")
+                        print(f"{Fore.RED}    Signature: {takeover_info['signature_matched']}")
+            
+            # Check for sensitive files
+            sensitive_files = self.check_sensitive_files(fqdn)
+            if sensitive_files:
+                result["sensitive_files"] = sensitive_files
+            
+            # Analyze security headers
+            security_analysis = self.analyze_security_headers(fqdn)
+            if security_analysis:
+                result["security_analysis"] = security_analysis
+            
             return result
         except:
             return None
@@ -909,6 +1309,46 @@ class DNSEnumerator:
             }
         
         return None
+    
+    def check_subdomain_takeover(self, subdomain, cname=None):
+        """Check if a subdomain is vulnerable to takeover"""
+        try:
+            # Skip if no CNAME
+            if not cname:
+                return None
+                
+            # Check each provider's signatures
+            for provider, data in TAKEOVER_SIGNATURES.items():
+                # Check if CNAME matches provider patterns
+                for pattern in data["cname_patterns"]:
+                    if re.match(pattern, cname):
+                        # Try to fetch the domain
+                        try:
+                            response = requests.get(f"http://{subdomain}", timeout=self.timeout, allow_redirects=True)
+                            content = response.text.lower()
+                            
+                            # Check for takeover signatures
+                            for signature in data["signatures"]:
+                                if signature.lower() in content:
+                                    return {
+                                        "provider": provider,
+                                        "cname": cname,
+                                        "signature_matched": signature,
+                                        "status_code": response.status_code
+                                    }
+                        except requests.exceptions.RequestException:
+                            # Connection failed - could indicate takeover possibility
+                            return {
+                                "provider": provider,
+                                "cname": cname,
+                                "signature_matched": "Connection failed",
+                                "status_code": 0
+                            }
+            return None
+        except Exception as e:
+            if self.verbose:
+                print(f"{Fore.RED}[!] Error checking takeover for {subdomain}: {e}")
+            return None
     
     def analyze_infrastructure(self):
         """Analyze DNS infrastructure for patterns and related domains"""
@@ -1333,35 +1773,188 @@ class DNSEnumerator:
         print(f"{Fore.BLUE}DNS Enumeration Summary for {self.domain}")
         print(f"{Fore.BLUE}{'=' * 60}\n")
         
-        print(f"{Fore.GREEN}Nameservers: {len(self.results['nameservers'])}")
-        print(f"{Fore.GREEN}Subdomains discovered: {len(self.results['subdomains'])}")
+        # Display nameservers
+        print(f"{Fore.GREEN}[+] Nameservers ({len(self.results['nameservers'])}):")
+        for ns in self.results["nameservers"]:
+            print(f"{Fore.GREEN}    {ns['hostname']} ({ns['ip']})")
         
-        record_types = len(self.results["records"])
-        total_records = sum(len(records) for records in self.results["records"].values())
-        print(f"{Fore.GREEN}Records: {total_records} records across {record_types} types")
+        # Display record summary
+        print(f"\n{Fore.GREEN}[+] DNS Records:")
+        for record_type, records in self.results["records"].items():
+            count = len(records)
+            if count > 0:
+                print(f"{Fore.GREEN}    {record_type}: {count} record(s)")
+                if self.verbose:
+                    for record in records:
+                        if isinstance(record, dict):
+                            print(f"{Fore.GREEN}        {json.dumps(record, indent=2)}")
+                        else:
+                            print(f"{Fore.GREEN}        {record}")
         
+        # Display DNSSEC status
+        if "dnssec" in self.results:
+            print(f"\n{Fore.GREEN}[+] DNSSEC Status:")
+            if self.results["dnssec"]["enabled"]:
+                print(f"{Fore.GREEN}    Enabled")
+                if "records" in self.results["dnssec"]:
+                    for record_type, records in self.results["dnssec"]["records"].items():
+                        print(f"{Fore.GREEN}    {record_type}: {len(records)} record(s)")
+            else:
+                print(f"{Fore.RED}    Not enabled")
+            
+            if self.results["dnssec"]["issues"]:
+                print(f"\n{Fore.RED}[!] DNSSEC Issues:")
+                for issue in self.results["dnssec"]["issues"]:
+                    print(f"{Fore.RED}    - {issue}")
+        
+        # Display zone transfer results
         if self.results["zone_transfer"]["successful"]:
-            print(f"{Fore.GREEN}Zone Transfer: Successful ({len(self.results['zone_transfer']['results'])} records)")
+            print(f"\n{Fore.GREEN}[+] Zone Transfer: Successful")
+            print(f"{Fore.GREEN}    Retrieved {len(self.results['zone_transfer']['results'])} records")
         else:
-            print(f"{Fore.RED}Zone Transfer: Failed")
+            print(f"\n{Fore.YELLOW}[*] Zone Transfer: Failed")
         
+        # Display wildcard detection
         if self.results["wildcard_detection"]["detected"]:
-            print(f"{Fore.YELLOW}Wildcard DNS: Detected")
-        else:
-            print(f"{Fore.GREEN}Wildcard DNS: Not detected")
+            print(f"\n{Fore.YELLOW}[!] Wildcard DNS detected")
+            print(f"{Fore.YELLOW}    IPs: {', '.join(self.results['wildcard_detection']['ips'])}")
         
-        if "related_domains" in self.results["infrastructure"]:
-            print(f"{Fore.GREEN}Related domains: {len(self.results['infrastructure']['related_domains'])}")
+        # Display subdomain summary
+        print(f"\n{Fore.GREEN}[+] Subdomains ({len(self.results['subdomains'])}):")
         
-        # Print provider distribution if available
-        if self.detect_providers and "summary" in self.results["hosting_providers"] and self.results["hosting_providers"]["summary"]:
-            print(f"\n{Fore.GREEN}Hosting Provider Distribution:")
-            for provider in self.results["hosting_providers"]["summary"][:5]:  # Show top 5
-                percentage = (provider["count"] / len(self.results["subdomains"])) * 100
-                print(f"{Fore.GREEN}    {provider['provider']}: {provider['count']} ({percentage:.1f}%)")
+        # Group subdomains by provider
+        provider_groups = {}
+        for subdomain in self.results["subdomains"]:
+            provider = "Unknown"
+            if "provider" in subdomain and subdomain["provider"]:
+                provider = subdomain["provider"]["name"]
+            
+            if provider not in provider_groups:
+                provider_groups[provider] = []
+            provider_groups[provider].append(subdomain)
+        
+        # Display subdomains grouped by provider
+        for provider, subdomains in provider_groups.items():
+            print(f"\n{Fore.YELLOW}    {provider} ({len(subdomains)}):")
+            for subdomain in sorted(subdomains, key=lambda x: x["name"]):
+                status = ""
+                if "issues" in subdomain and subdomain["issues"]:
+                    status = f" {Fore.RED}[{len(subdomain['issues'])} issues]{Fore.GREEN}"
+                print(f"{Fore.GREEN}        {subdomain['name']}{status}")
+                if self.verbose:
+                    print(f"{Fore.GREEN}            IPs: {', '.join(subdomain.get('ips', []))}")
+                    if "cname" in subdomain and subdomain["cname"]:
+                        print(f"{Fore.GREEN}            CNAME: {subdomain['cname']}")
+                    if "issues" in subdomain and subdomain["issues"]:
+                        for issue in subdomain["issues"]:
+                            print(f"{Fore.RED}            - {issue}")
+        
+        # Display security issues summary
+        all_issues = []
+        
+        # Collect DNSSEC issues
+        if "dnssec" in self.results and self.results["dnssec"]["issues"]:
+            all_issues.extend([("DNSSEC", issue) for issue in self.results["dnssec"]["issues"]])
+        
+        # Collect subdomain issues
+        for subdomain in self.results["subdomains"]:
+            if "issues" in subdomain and subdomain["issues"]:
+                all_issues.extend([(subdomain["name"], issue) for issue in subdomain["issues"]])
+        
+        if all_issues:
+            print(f"\n{Fore.RED}[!] Security Issues Summary ({len(all_issues)}):")
+            for source, issue in all_issues:
+                print(f"{Fore.RED}    {source}: {issue}")
         
         print(f"\n{Fore.BLUE}{'=' * 60}")
-    
+
+    def generate_html_report(self, output_file):
+        """Generate an HTML report of the enumeration results"""
+        try:
+            # Calculate security score and key findings
+            security_score = 100
+            key_findings = []
+            total_issues = 0
+            
+            # Check DNSSEC
+            if "dnssec" in self.results:
+                if not self.results["dnssec"]["enabled"]:
+                    security_score -= 20
+                    key_findings.append({
+                        "severity": "high",
+                        "message": "DNSSEC is not enabled"
+                    })
+                elif self.results["dnssec"]["issues"]:
+                    security_score -= len(self.results["dnssec"]["issues"]) * 5
+                    total_issues += len(self.results["dnssec"]["issues"])
+                    key_findings.append({
+                        "severity": "medium",
+                        "message": f"DNSSEC has {len(self.results['dnssec']['issues'])} configuration issues"
+                    })
+            
+            # Check email security
+            if "email_security" in self.results:
+                if not self.results["email_security"].get("spf_record"):
+                    security_score -= 15
+                    key_findings.append({
+                        "severity": "high",
+                        "message": "SPF record is missing"
+                    })
+                if not self.results["email_security"].get("dmarc_record"):
+                    security_score -= 15
+                    key_findings.append({
+                        "severity": "high",
+                        "message": "DMARC record is missing"
+                    })
+                if not self.results["email_security"].get("dkim_records"):
+                    security_score -= 10
+                    key_findings.append({
+                        "severity": "medium",
+                        "message": "No DKIM records found"
+                    })
+                
+                if "issues" in self.results["email_security"]:
+                    total_issues += len(self.results["email_security"]["issues"])
+            
+            # Check subdomain issues
+            subdomain_issues = sum(len(s.get("issues", [])) for s in self.results["subdomains"])
+            if subdomain_issues > 0:
+                security_score -= min(20, subdomain_issues * 2)
+                total_issues += subdomain_issues
+                key_findings.append({
+                    "severity": "medium",
+                    "message": f"Found {subdomain_issues} issues across subdomains"
+                })
+            
+            # Ensure score doesn't go below 0
+            security_score = max(0, security_score)
+            
+            # Prepare template data
+            template_data = {
+                "domain": self.domain,
+                "nameservers": self.results["nameservers"],
+                "records": self.results["records"],
+                "subdomains": self.results["subdomains"],
+                "dnssec": self.results.get("dnssec", {}),
+                "email_security": self.results.get("email_security", {}),
+                "security_score": security_score,
+                "key_findings": key_findings,
+                "total_issues": total_issues
+            }
+            
+            # Generate HTML report
+            template = jinja2.Template(HTML_TEMPLATE)
+            html_content = template.render(**template_data)
+            
+            # Write to file
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
+            print(f"{Fore.GREEN}[+] HTML report generated: {output_file}")
+            
+        except Exception as e:
+            print(f"{Fore.RED}[!] Error generating HTML report: {e}")
+
     def run(self):
         """Run the full DNS enumeration process"""
         print(f"{Fore.BLUE}[*] Starting DNS enumeration for {self.domain}")
@@ -1432,6 +2025,747 @@ class DNSEnumerator:
                     percentage = (provider["count"] / len(self.results["subdomains"])) * 100
                     print(f"{Fore.GREEN}    {idx+1}. {provider['provider']}: {provider['count']} subdomains ({percentage:.1f}%)")
 
+    def check_sensitive_files(self, subdomain):
+        """Check for sensitive files and endpoints"""
+        results = []
+        
+        for category, paths in SENSITIVE_FILES.items():
+            for path in paths:
+                for protocol in ['http', 'https']:
+                    url = f"{protocol}://{subdomain}{path}"
+                    try:
+                        response = requests.get(url, timeout=self.timeout, allow_redirects=True, 
+                                             verify=False)  # Skip SSL verification for testing
+                        
+                        # Check if the response indicates the file exists
+                        if response.status_code in [200, 301, 302, 403]:
+                            result = {
+                                "url": url,
+                                "category": category,
+                                "status_code": response.status_code,
+                                "content_length": len(response.content),
+                                "content_type": response.headers.get('content-type', '')
+                            }
+                            
+                            # For certain files, check content for sensitive information
+                            if path in ['/.env', '/config.php', '/wp-config.php']:
+                                # Look for potential secrets or credentials
+                                sensitive_patterns = [
+                                    r'password\s*=\s*[\'"][^\'"]+[\'"]',
+                                    r'secret\s*=\s*[\'"][^\'"]+[\'"]',
+                                    r'api[_-]?key\s*=\s*[\'"][^\'"]+[\'"]',
+                                    r'access[_-]?key\s*=\s*[\'"][^\'"]+[\'"]',
+                                    r'database\s*=\s*[\'"][^\'"]+[\'"]'
+                                ]
+                                
+                                content = response.text.lower()
+                                for pattern in sensitive_patterns:
+                                    if re.search(pattern, content, re.I):
+                                        result["contains_sensitive"] = True
+                                        break
+                            
+                            results.append(result)
+                            
+                            if self.verbose:
+                                print(f"{Fore.RED}[!] Found sensitive file: {url} ({response.status_code})")
+                    
+                    except requests.exceptions.RequestException:
+                        continue
+                    
+                    except Exception as e:
+                        if self.verbose:
+                            print(f"{Fore.RED}[!] Error checking {url}: {e}")
+        
+        return results if results else None
+
+    def analyze_security_headers(self, subdomain):
+        """Analyze security headers of a subdomain"""
+        results = {
+            "headers": {},
+            "missing_headers": [],
+            "issues": []
+        }
+        
+        for protocol in ['https', 'http']:
+            url = f"{protocol}://{subdomain}"
+            try:
+                response = requests.get(url, timeout=self.timeout, verify=False,
+                                     allow_redirects=True)
+                
+                # Store all security headers found
+                for header, config in SECURITY_HEADERS.items():
+                    header_value = response.headers.get(header)
+                    if header_value:
+                        results["headers"][header] = header_value
+                    else:
+                        results["missing_headers"].append({
+                            "header": header,
+                            "description": config["description"]
+                        })
+                
+                # Check for other security issues
+                if protocol == 'http' and response.url.startswith('http://'):
+                    results["issues"].append("No HTTPS redirect")
+                
+                if 'Server' in response.headers:
+                    results["server"] = response.headers['Server']
+                    if any(v in response.headers['Server'].lower() 
+                          for v in ['apache', 'nginx', 'iis']):
+                        results["issues"].append(
+                            f"Server version disclosure: {response.headers['Server']}")
+                
+                # Check for cookie security
+                if 'Set-Cookie' in response.headers:
+                    cookies = response.headers.getlist('Set-Cookie')
+                    for cookie in cookies:
+                        if 'secure' not in cookie.lower():
+                            results["issues"].append("Cookie without Secure flag")
+                        if 'httponly' not in cookie.lower():
+                            results["issues"].append("Cookie without HttpOnly flag")
+                        if 'samesite' not in cookie.lower():
+                            results["issues"].append("Cookie without SameSite attribute")
+                
+                # Basic SSL/TLS analysis
+                if protocol == 'https':
+                    try:
+                        import ssl
+                        import socket
+                        
+                        hostname = subdomain
+                        context = ssl.create_default_context()
+                        with socket.create_connection((hostname, 443)) as sock:
+                            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                                cert = ssock.getpeercert()
+                                
+                                # Check certificate expiration
+                                from datetime import datetime
+                                import ssl
+                                not_after = ssl.cert_time_to_seconds(cert['notAfter'])
+                                remaining_days = (not_after - time.time()) / (24*60*60)
+                                
+                                if remaining_days < 30:
+                                    results["issues"].append(
+                                        f"SSL certificate expires in {int(remaining_days)} days")
+                                
+                                # Check for weak cipher suites
+                                cipher = ssock.cipher()
+                                if cipher[0] in ['RC4', 'DES', '3DES']:
+                                    results["issues"].append(
+                                        f"Weak cipher suite in use: {cipher[0]}")
+                                
+                                results["ssl"] = {
+                                    "issuer": dict(x[0] for x in cert['issuer']),
+                                    "version": cert['version'],
+                                    "expires": cert['notAfter'],
+                                    "cipher_suite": cipher[0]
+                                }
+                    except:
+                        results["issues"].append("SSL/TLS connection failed")
+                
+                break  # If successful, no need to try other protocol
+                
+            except requests.exceptions.RequestException:
+                continue
+            except Exception as e:
+                if self.verbose:
+                    print(f"{Fore.RED}[!] Error analyzing security headers for {subdomain}: {e}")
+        
+        return results if results["headers"] or results["missing_headers"] or results["issues"] else None
+
+    def analyze_dnssec(self, domain):
+        """Analyze DNSSEC configuration and look for vulnerabilities"""
+        results = {
+            "enabled": False,
+            "records": {},
+            "issues": [],
+            "validation": {
+                "status": "unknown",
+                "details": []
+            }
+        }
+        
+        try:
+            # First check if DNSSEC is enabled by looking for DNSKEY records
+            try:
+                # Set DO (DNSSEC OK) bit in the query
+                resolver = dns.resolver.Resolver()
+                resolver.use_edns(0, dns.flags.DO, 4096)
+                
+                dnskey_records = resolver.resolve(domain, 'DNSKEY')
+                results["enabled"] = True
+                results["records"]["DNSKEY"] = []
+                
+                for dnskey in dnskey_records:
+                    key_info = {
+                        "flags": dnskey.flags,
+                        "protocol": dnskey.protocol,
+                        "algorithm": dnskey.algorithm,
+                        "algorithm_name": DNSSEC_ALGORITHMS.get(dnskey.algorithm, "Unknown"),
+                        "key_tag": dns.dnssec.key_id(dnskey),
+                        "key_type": "KSK" if dnskey.flags & dns.flags.ZONE else "ZSK"
+                    }
+                    
+                    # Check key length
+                    try:
+                        key_text = dns.dnssec.key_to_text(dnskey)
+                        key_info["key_length"] = len(key_text.split()[-1])
+                    except:
+                        key_info["key_length"] = 0
+                    
+                    # Check for weak algorithms
+                    if dnskey.algorithm in [1, 3, 5, 6, 7]:
+                        results["issues"].append(
+                            f"Weak DNSSEC algorithm in use: {key_info['algorithm_name']} (Algorithm {dnskey.algorithm})")
+                    
+                    # Check key length for RSA keys
+                    if dnskey.algorithm in [5, 7, 8, 10] and key_info["key_length"] > 0:  # RSA algorithms
+                        if key_info["key_length"] < 2048:
+                            results["issues"].append(
+                                f"Weak RSA key length: {key_info['key_length']} bits for {key_info['key_type']}")
+                    
+                    results["records"]["DNSKEY"].append(key_info)
+                
+                # Check for minimum required keys
+                ksk_count = sum(1 for k in results["records"]["DNSKEY"] if k["key_type"] == "KSK")
+                zsk_count = sum(1 for k in results["records"]["DNSKEY"] if k["key_type"] == "ZSK")
+                
+                if ksk_count == 0:
+                    results["issues"].append("No Key Signing Key (KSK) found")
+                if zsk_count == 0:
+                    results["issues"].append("No Zone Signing Key (ZSK) found")
+                
+            except dns.resolver.NoAnswer:
+                results["issues"].append("DNSSEC not enabled - No DNSKEY records found")
+                return results
+            except Exception as e:
+                results["issues"].append(f"Error checking DNSKEY records: {str(e)}")
+                return results
+            
+            # Check DS records at parent zone
+            try:
+                parent_zone = '.'.join(domain.split('.')[1:]) if '.' in domain else ''
+                if parent_zone:
+                    ds_records = resolver.resolve(domain, 'DS')
+                    results["records"]["DS"] = []
+                    
+                    for ds in ds_records:
+                        ds_info = {
+                            "key_tag": ds.key_tag,
+                            "algorithm": ds.algorithm,
+                            "algorithm_name": DNSSEC_ALGORITHMS.get(ds.algorithm, "Unknown"),
+                            "digest_type": ds.digest_type,
+                            "digest_type_name": DNSSEC_DIGEST_TYPES.get(ds.digest_type, "Unknown"),
+                            "digest": ds.digest.hex()
+                        }
+                        
+                        # Check for weak digest types
+                        if ds.digest_type == 1:  # SHA-1
+                            results["issues"].append("Weak DS record digest type (SHA-1)")
+                        
+                        results["records"]["DS"].append(ds_info)
+                        
+                    # Verify DS records match DNSKEY records
+                    ds_key_tags = set(ds["key_tag"] for ds in results["records"]["DS"])
+                    dnskey_key_tags = set(key["key_tag"] for key in results["records"]["DNSKEY"] 
+                                        if key["key_type"] == "KSK")
+                    
+                    if not ds_key_tags.intersection(dnskey_key_tags):
+                        results["issues"].append("DS records do not match any DNSKEY records")
+                        
+            except dns.resolver.NoAnswer:
+                results["issues"].append("No DS records found - DNSSEC chain of trust may be broken")
+            except Exception as e:
+                results["issues"].append(f"Error checking DS records: {str(e)}")
+            
+            # Check NSEC/NSEC3 configuration
+            try:
+                # Query a definitely non-existent domain
+                test_name = f"nonexistent-{random.randint(100000,999999)}.{domain}"
+                try:
+                    resolver.resolve(test_name, 'A')
+                except dns.resolver.NXDOMAIN as e:
+                    response = e.response()
+                    
+                    # Check for NSEC records
+                    nsec_records = [r for r in response.authority if r.rdtype == dns.rdatatype.NSEC]
+                    if nsec_records:
+                        results["records"]["NSEC"] = []
+                        for rrset in nsec_records:
+                            for nsec in rrset:
+                                nsec_info = {
+                                    "owner": str(rrset.name),
+                                    "next_domain": str(nsec.next),
+                                    "record_types": [dns.rdatatype.to_text(rtype) for rtype in nsec.windows]
+                                }
+                                results["records"]["NSEC"].append(nsec_info)
+                        results["issues"].append(
+                            "Using NSEC - vulnerable to zone enumeration")
+                    
+                    # Check for NSEC3 records
+                    nsec3_records = [r for r in response.authority if r.rdtype == dns.rdatatype.NSEC3]
+                    if nsec3_records:
+                        results["records"]["NSEC3"] = []
+                        for rrset in nsec3_records:
+                            for nsec3 in rrset:
+                                nsec3_info = {
+                                    "hash_algorithm": nsec3.algorithm,
+                                    "flags": nsec3.flags,
+                                    "iterations": nsec3.iterations,
+                                    "salt": nsec3.salt.hex() if nsec3.salt else "no salt",
+                                    "next_hashed_owner": nsec3.next.hex()
+                                }
+                                
+                                # Check for weak NSEC3 configuration
+                                if nsec3.iterations < 10:
+                                    results["issues"].append(
+                                        f"Low NSEC3 iterations ({nsec3.iterations}) - Vulnerable to offline attacks")
+                                elif nsec3.iterations > 50:
+                                    results["issues"].append(
+                                        f"High NSEC3 iterations ({nsec3.iterations}) - May cause performance issues")
+                                    
+                                if not nsec3.salt:
+                                    results["issues"].append("NSEC3 with empty salt - Reduces effectiveness")
+                                elif len(nsec3.salt) < 8:
+                                    results["issues"].append("Short NSEC3 salt - Consider using longer salt")
+                                
+                                results["records"]["NSEC3"].append(nsec3_info)
+                
+            except Exception as e:
+                results["issues"].append(f"Error checking NSEC/NSEC3: {str(e)}")
+            
+            # Validate DNSSEC chain
+            try:
+                request = dns.message.make_query(domain, 'A', want_dnssec=True)
+                request.flags |= dns.flags.AD
+                
+                # Try validation against multiple nameservers
+                validation_success = False
+                validation_errors = []
+                
+                for ns in self.nameservers[:2]:  # Try first two nameservers
+                    try:
+                        response = dns.query.udp(request, ns, timeout=5)
+                        if response.flags & dns.flags.AD:
+                            validation_success = True
+                            break
+                    except Exception as e:
+                        validation_errors.append(f"Validation failed on {ns}: {str(e)}")
+                
+                results["validation"]["status"] = "valid" if validation_success else "invalid"
+                if not validation_success:
+                    results["validation"]["details"] = validation_errors
+                    results["issues"].append("DNSSEC validation failed - Chain of trust might be broken")
+                
+            except Exception as e:
+                results["validation"]["status"] = "error"
+                results["validation"]["details"].append(str(e))
+                results["issues"].append("Error validating DNSSEC chain")
+            
+            # Check RRSIG coverage and validity
+            try:
+                for record_type in ['A', 'AAAA', 'MX', 'NS', 'SOA']:
+                    try:
+                        answers = resolver.resolve(domain, record_type, rdtype=dns.rdatatype.RRSIG)
+                        if "RRSIG" not in results["records"]:
+                            results["records"]["RRSIG"] = []
+                        
+                        for rrsig in answers:
+                            sig_info = {
+                                "type_covered": dns.rdatatype.to_text(rrsig.type_covered),
+                                "algorithm": rrsig.algorithm,
+                                "algorithm_name": DNSSEC_ALGORITHMS.get(rrsig.algorithm, "Unknown"),
+                                "labels": rrsig.labels,
+                                "original_ttl": rrsig.original_ttl,
+                                "expiration": time.strftime('%Y-%m-%d %H:%M:%S', 
+                                                          time.gmtime(rrsig.expiration)),
+                                "inception": time.strftime('%Y-%m-%d %H:%M:%S', 
+                                                         time.gmtime(rrsig.inception)),
+                                "key_tag": rrsig.key_tag,
+                                "signer": str(rrsig.signer)
+                            }
+                            
+                            # Check signature validity
+                            now = time.time()
+                            if now > rrsig.expiration:
+                                results["issues"].append(
+                                    f"Expired RRSIG for {record_type} record")
+                            elif rrsig.expiration - now < 7 * 24 * 3600:  # 7 days
+                                results["issues"].append(
+                                    f"RRSIG for {record_type} record expires in less than 7 days")
+                            
+                            results["records"]["RRSIG"].append(sig_info)
+                    except:
+                        continue
+                
+            except Exception as e:
+                results["issues"].append(f"Error checking RRSIG records: {str(e)}")
+            
+        except Exception as e:
+            results["issues"].append(f"Error during DNSSEC analysis: {str(e)}")
+        
+        return results
+
+    def analyze_email_security(self, domain):
+        """Analyze email security configuration and look for vulnerabilities"""
+        results = {
+            "mx_records": [],
+            "spf_record": None,
+            "dmarc_record": None,
+            "dkim_records": [],
+            "provider": None,
+            "issues": [],
+            "smtp_servers": [],
+            "additional_records": []
+        }
+        
+        try:
+            # Get MX records
+            try:
+                mx_records = self.resolver.resolve(domain, 'MX')
+                for mx in mx_records:
+                    mx_info = {
+                        "preference": mx.preference,
+                        "exchange": str(mx.exchange),
+                        "ips": []
+                    }
+                    
+                    # Resolve MX IP addresses
+                    try:
+                        mx_ips = self.resolver.resolve(str(mx.exchange), 'A')
+                        mx_info["ips"] = [str(ip) for ip in mx_ips]
+                    except:
+                        pass
+                    
+                    results["mx_records"].append(mx_info)
+                    
+                    # Check SMTP security for each MX server
+                    for ip in mx_info["ips"]:
+                        smtp_info = self._check_smtp_security(ip)
+                        if smtp_info:
+                            results["smtp_servers"].append(smtp_info)
+                
+                # Detect email provider based on MX records
+                provider_info = self._detect_email_provider(results["mx_records"])
+                if provider_info:
+                    results["provider"] = provider_info
+            except dns.resolver.NoAnswer:
+                results["issues"].append("No MX records found")
+            except Exception as e:
+                if self.verbose:
+                    print(f"{Fore.RED}[!] Error checking MX records: {e}")
+            
+            # Check SPF record
+            try:
+                txt_records = self.resolver.resolve(domain, 'TXT')
+                for record in txt_records:
+                    txt = str(record).strip('"')
+                    if txt.startswith('v=spf1'):
+                        results["spf_record"] = self._analyze_spf_record(txt, results["provider"])
+            except dns.resolver.NoAnswer:
+                results["issues"].append("No SPF record found")
+            except Exception as e:
+                if self.verbose:
+                    print(f"{Fore.RED}[!] Error checking SPF record: {e}")
+            
+            # Check DMARC record
+            try:
+                dmarc_records = self.resolver.resolve(f"_dmarc.{domain}", 'TXT')
+                for record in dmarc_records:
+                    txt = str(record).strip('"')
+                    if txt.startswith('v=DMARC1'):
+                        results["dmarc_record"] = self._analyze_dmarc_record(txt)
+            except dns.resolver.NoAnswer:
+                results["issues"].append("No DMARC record found")
+            except Exception as e:
+                if self.verbose:
+                    print(f"{Fore.RED}[!] Error checking DMARC record: {e}")
+            
+            # Check DKIM records (common selectors)
+            common_selectors = ['default', 'google', 'selector1', 'selector2', 'k1', 'dkim']
+            if results["provider"]:
+                provider_name = results["provider"]["name"].lower()
+                if provider_name in EMAIL_PROVIDERS:
+                    provider_data = EMAIL_PROVIDERS[provider_name]
+                    if "selectors" in provider_data:
+                        common_selectors.extend(provider_data["selectors"])
+            
+            for selector in common_selectors:
+                try:
+                    dkim_records = self.resolver.resolve(f"{selector}._domainkey.{domain}", 'TXT')
+                    for record in dkim_records:
+                        txt = str(record).strip('"')
+                        if txt.startswith('v=DKIM1'):
+                            results["dkim_records"].append({
+                                "selector": selector,
+                                "record": txt
+                            })
+                except:
+                    continue
+            
+            if not results["dkim_records"]:
+                results["issues"].append("No DKIM records found")
+            
+            # Check for additional provider-specific records
+            if results["provider"]:
+                provider_name = results["provider"]["name"]
+                if provider_name in EMAIL_PROVIDERS:
+                    provider_data = EMAIL_PROVIDERS[provider_name]
+                    for record in provider_data.get("additional_records", []):
+                        try:
+                            verification = self.resolver.resolve(f"{record}.{domain}", 'TXT')
+                            results["additional_records"].append({
+                                "name": record,
+                                "found": True
+                            })
+                        except:
+                            results["additional_records"].append({
+                                "name": record,
+                                "found": False
+                            })
+                            results["issues"].append(f"Missing {provider_name} verification record: {record}")
+            
+            return results
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"{Fore.RED}[!] Error during email security analysis: {e}")
+            return results
+    
+    def _detect_email_provider(self, mx_records):
+        """Detect email provider based on MX records"""
+        if not mx_records:
+            return None
+        
+        for provider_name, provider_data in EMAIL_PROVIDERS.items():
+            for mx_record in mx_records:
+                exchange = mx_record["exchange"].lower()
+                for pattern in provider_data["mx_patterns"]:
+                    if re.search(pattern, exchange):
+                        return {
+                            "name": provider_name,
+                            "mx_match": exchange
+                        }
+        return None
+    
+    def _analyze_spf_record(self, spf_record, provider_info):
+        """Analyze SPF record for issues"""
+        result = {
+            "record": spf_record,
+            "mechanisms": [],
+            "issues": []
+        }
+        
+        # Parse SPF record
+        parts = spf_record.split()
+        result["qualifier"] = parts[-1]
+        
+        # Check for issues
+        if result["qualifier"] not in ['-all', '~all']:
+            result["issues"].append("SPF record should end with -all or ~all")
+        
+        ip_literals = []
+        include_count = 0
+        
+        for part in parts[1:]:  # Skip v=spf1
+            if part.startswith('ip4:') or part.startswith('ip6:'):
+                ip_literals.append(part)
+            elif part.startswith('include:'):
+                include_count += 1
+            result["mechanisms"].append(part)
+        
+        # Check for too many DNS lookups
+        if include_count > 10:
+            result["issues"].append(f"Too many DNS lookups ({include_count})")
+        
+        # Check for IP literals
+        if ip_literals:
+            result["issues"].append(f"Contains {len(ip_literals)} IP literals")
+        
+        # Check provider-specific requirements
+        if provider_info:
+            provider_name = provider_info["name"]
+            if provider_name in EMAIL_PROVIDERS:
+                required_includes = EMAIL_PROVIDERS[provider_name]["spf_includes"]
+                for required in required_includes:
+                    if not any(m.startswith(f"include:{required}") for m in result["mechanisms"]):
+                        result["issues"].append(f"Missing required include: {required}")
+        
+        return result
+    
+    def _analyze_dmarc_record(self, dmarc_record):
+        """Analyze DMARC record for issues"""
+        result = {
+            "record": dmarc_record,
+            "tags": {},
+            "issues": []
+        }
+        
+        # Parse DMARC record
+        parts = dmarc_record.split(';')
+        for part in parts:
+            part = part.strip()
+            if '=' in part:
+                tag, value = part.split('=', 1)
+                result["tags"][tag.strip()] = value.strip()
+        
+        # Check policy
+        policy = result["tags"].get('p', 'none')
+        if policy == 'none':
+            result["issues"].append("DMARC policy set to none")
+        elif policy == 'quarantine':
+            result["issues"].append("Consider using stricter DMARC policy (reject)")
+        
+        # Check reporting
+        if 'rua' not in result["tags"]:
+            result["issues"].append("No aggregate reporting configured")
+        if 'ruf' not in result["tags"]:
+            result["issues"].append("No forensic reporting configured")
+        
+        # Check percentage
+        pct = result["tags"].get('pct', '100')
+        if int(pct) < 100:
+            result["issues"].append(f"DMARC policy only applies to {pct}% of emails")
+        
+        # Check subdomain policy
+        if 'sp' not in result["tags"]:
+            result["issues"].append("No explicit subdomain policy specified")
+        
+        return result
+    
+    def _check_smtp_security(self, ip):
+        """Check SMTP server security configuration"""
+        result = {
+            "ip": ip,
+            "issues": [],
+            "banner": None,
+            "starttls": False
+        }
+        
+        for port in SMTP_SECURITY_CHECKS["open_relay"]["ports"]:
+            try:
+                # Try to connect with timeout
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(self.timeout)
+                sock.connect((ip, port))
+                
+                # Get banner
+                banner = sock.recv(1024).decode()
+                result["banner"] = banner.strip()
+                
+                # Check for version disclosure in banner
+                for dangerous in SMTP_SECURITY_CHECKS["banner_check"]["dangerous_strings"]:
+                    if dangerous.lower() in banner.lower():
+                        result["issues"].append(f"Version disclosure in banner: {dangerous}")
+                
+                # Check STARTTLS
+                if port in SMTP_SECURITY_CHECKS["starttls_required"]["ports"]:
+                    sock.send(b"EHLO test.com\r\n")
+                    response = sock.recv(1024).decode()
+                    if "STARTTLS" in response:
+                        result["starttls"] = True
+                    else:
+                        result["issues"].append(f"STARTTLS not supported on port {port}")
+                
+                sock.close()
+                break
+            except:
+                continue
+        
+        return result
+
+# HTML report template
+HTML_TEMPLATE = '''<!DOCTYPE html>
+<html>
+<head>
+    <title>DNS Enumeration Report - {{ domain }}</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .severity-high { color: #dc3545; }
+        .severity-medium { color: #ffc107; }
+        .severity-low { color: #28a745; }
+    </style>
+</head>
+<body>
+    <div class="container py-4">
+        <h1>DNS Enumeration Report - {{ domain }}</h1>
+        
+        <div class="card mb-4">
+            <div class="card-header"><h5>Summary</h5></div>
+            <div class="card-body">
+                <p>Security Score: {{ security_score }}%</p>
+                <p>Total Issues: {{ total_issues }}</p>
+                <ul>
+                    {% for finding in key_findings %}
+                    <li class="severity-{{ finding.severity }}">{{ finding.message }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header"><h5>DNSSEC</h5></div>
+            <div class="card-body">
+                <p>Status: {{ 'Enabled' if dnssec.enabled else 'Not enabled' }}</p>
+                {% if dnssec.issues %}
+                <ul>
+                    {% for issue in dnssec.issues %}
+                    <li class="text-danger">{{ issue }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card mb-4">
+            <div class="card-header"><h5>Email Security</h5></div>
+            <div class="card-body">
+                <p>SPF: {{ email_security.spf_record.record if email_security.spf_record else 'Not configured' }}</p>
+                <p>DMARC: {{ email_security.dmarc_record.record if email_security.dmarc_record else 'Not configured' }}</p>
+                <p>DKIM Records: {{ email_security.dkim_records|length }}</p>
+                {% if email_security.issues %}
+                <ul>
+                    {% for issue in email_security.issues %}
+                    <li class="text-danger">{{ issue }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header"><h5>Subdomains</h5></div>
+            <div class="card-body">
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Subdomain</th>
+                            <th>IP Addresses</th>
+                            <th>Issues</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for subdomain in subdomains %}
+                        <tr>
+                            <td>{{ subdomain.name }}</td>
+                            <td>{{ subdomain.ips|join(', ') }}</td>
+                            <td>
+                                {% if subdomain.issues %}
+                                <ul>
+                                    {% for issue in subdomain.issues %}
+                                    <li class="text-danger">{{ issue }}</li>
+                                    {% endfor %}
+                                </ul>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>'''
 
 def main():
     parser = argparse.ArgumentParser(description="Advanced DNS Enumeration Tool")
@@ -1439,7 +2773,7 @@ def main():
     parser.add_argument("-w", "--wordlist", help="Wordlist for subdomain bruteforcing (or use predefined: tiny, small, medium, large, xl, dns-jhaddix, bitquark)")
     parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads for subdomain bruteforcing (default: 10)")
     parser.add_argument("-o", "--output", help="Output file to save results")
-    parser.add_argument("-f", "--format", choices=["json", "csv", "txt"], default="json", help="Output format (default: json)")
+    parser.add_argument("-f", "--format", choices=["json", "csv", "txt", "html"], default="json", help="Output format (default: json)")
     parser.add_argument("-n", "--nameserver", action="append", help="Custom nameserver to use (can be specified multiple times)")
     parser.add_argument("--timeout", type=float, default=2.0, help="Timeout for DNS queries in seconds (default: 2.0)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
@@ -1450,6 +2784,7 @@ def main():
     parser.add_argument("--no-wildcard-check", action="store_true", help="Skip wildcard DNS detection")
     parser.add_argument("--resume", action="store_true", help="Resume from previous scan if available")
     parser.add_argument("--no-provider-detection", action="store_true", help="Disable cloud provider detection")
+    parser.add_argument("--html-report", help="Generate HTML report and save to specified file")
     
     args = parser.parse_args()
     
@@ -1477,6 +2812,10 @@ def main():
     )
     
     enumerator.run()
+    
+    # Generate HTML report if requested
+    if args.html_report:
+        enumerator.generate_html_report(args.html_report)
 
 
 if __name__ == "__main__":
