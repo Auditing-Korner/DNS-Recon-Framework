@@ -1,149 +1,117 @@
-# RFS-DNS-Framework - Bug Bounty Edition
+# DNS TLD Bruteforcer
 
-A comprehensive DNS reconnaissance and enumeration framework designed for bug bounty hunters, penetration testers, and security researchers. This framework consists of two powerful tools that work together to provide extensive DNS analysis capabilities.
+A Python script to discover valid domain names by bruteforcing different Top Level Domain (TLD) extensions, with special focus on country-code TLDs (ccTLDs) and categorized TLD lists.
 
 ## Features
 
-### DNS Enumerator (`dns_enum.py`)
+- Multi-threaded DNS resolution
+- Categorized TLD lists:
+  - Common TLDs (.com, .net, .org, etc.)
+  - Country-code TLDs (.pt, .es, .fr, etc.)
+  - Business TLDs (.shop, .store, .company, etc.)
+  - Tech TLDs (.ai, .dev, .cloud, etc.)
+- Advanced TLD bruteforce mode:
+  - Systematic TLD combination generation
+  - Common pattern detection (co.xx, com.xx, etc.)
+  - Configurable length range
+  - Progress tracking
+- Support for custom TLD wordlists
+- Configurable timeout and thread count
+- MX record detection
+- Error handling and rate limiting
 
-A feature-rich DNS enumeration tool that provides:
+## Installation
 
-- **Comprehensive DNS Record Enumeration**
-  - Supports all common DNS record types
-  - Automated nameserver detection and analysis
-  - Zone transfer attempt capabilities
-  - DNSSEC analysis
-  
-- **Advanced Subdomain Discovery**
-  - Memory-efficient subdomain bruteforcing
-  - Intelligent wildcard detection and filtering
-  - Multiple wordlist options (tiny to extra-large)
-  - Support for custom wordlists
-  
-- **Infrastructure Analysis**
-  - Cloud provider detection (AWS, Azure, GCP, etc.)
-  - DNS delegation analysis
-  - Reverse DNS lookup capabilities
-  - Email security analysis (SPF, DMARC)
-  
-- **Security Assessments**
-  - Subdomain takeover checks
-  - Security header analysis
-  - SMTP security checks
-  - Sensitive file detection
-  
-- **Flexible Output Options**
-  - JSON export
-  - CSV export
-  - Text report
-  - HTML report generation
-  - Result caching for interrupted scans
-
-### DNS Server Tester (`find_dnsserver.py`)
-
-A specialized tool for testing and validating DNS servers:
-
-- **Multiple DNS Server Testing**
-  - Test against top public DNS servers
-  - Regional DNS server testing (Netherlands, Egypt)
-  - Provider-specific testing (Vodafone)
-  - Root DNS server testing
-  - AWS DNS server testing
-  
-- **Performance Analysis**
-  - Response time measurement
-  - TCP/UDP protocol support
-  - Timeout handling
-  
-- **Flexible Input Options**
-  - Single server testing
-  - Batch testing from CSV files
-  - Built-in server lists
-  - Random server selection option
-
-## Requirements
-
+1. Clone this repository or download the scripts
+2. Install the required dependencies:
 ```bash
-pip install dnspython requests tqdm colorama pandas jinja2
+pip install -r requirements.txt
 ```
 
 ## Usage
 
-### DNS Enumerator
-
+Basic usage with all TLD categories:
 ```bash
-python dns_enum.py domain.com [options]
-
-Options:
-  --wordlist WORDLIST     Specify wordlist (tiny/small/medium/large/xl)
-  --threads THREADS       Number of concurrent threads (default: 10)
-  --timeout TIMEOUT      Query timeout in seconds (default: 2)
-  --output OUTPUT        Output file path
-  --format FORMAT        Output format (json/csv/txt/html)
-  --verbose             Enable verbose output
-  --max-depth DEPTH     Maximum recursion depth
-  --resolve-ips         Enable reverse DNS lookups
-  --no-wildcard         Disable wildcard detection
-  --resume              Resume from cached results
-  --no-providers        Disable cloud provider detection
+python dns_tld_bruteforce.py example
 ```
 
-### DNS Server Tester
-
+Check only country-code TLDs:
 ```bash
-python find_dnsserver.py domain.com [options]
-
-Options:
-  -s, --server          Test specific DNS server
-  -t, --timeout         Timeout in seconds (default: 2)
-  --top                 Test against top public DNS servers
-  --nl, --holland       Test Netherlands DNS servers
-  --eg, --egypt         Test Egypt DNS servers
-  --vodafone           Test Vodafone DNS servers
-  --root               Test root DNS servers
-  --aws                Test AWS DNS servers
-  --all                Test all known DNS servers
-  --list FILE          Test servers from CSV file
-  --shuffle            Randomize server testing order
-  --tcp                Use TCP instead of UDP
+python dns_tld_bruteforce.py example --type country
 ```
 
-## Examples
-
-### Basic Enumeration
+Enable bruteforce mode:
 ```bash
-python dns_enum.py example.com
+python dns_tld_bruteforce.py example -b
 ```
 
-### Advanced Enumeration with HTML Report
+Bruteforce with custom length range:
 ```bash
-python dns_enum.py example.com --wordlist large --threads 20 --format html --output report.html
+python dns_tld_bruteforce.py example -b --min-length 2 --max-length 4
 ```
 
-### Testing Multiple DNS Servers
+Using a custom TLD wordlist:
 ```bash
-python find_dnsserver.py example.com --all --shuffle
+python dns_tld_bruteforce.py example -w tlds.txt
 ```
 
-### Testing Specific DNS Server
+Advanced usage with custom threads and timeout:
 ```bash
-python find_dnsserver.py example.com -s 8.8.8.8 --tcp
+python dns_tld_bruteforce.py example -t 20 --timeout 3
 ```
 
-## Contributing
+### Arguments
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+- `domain`: Base domain name without TLD (required)
+- `-w, --wordlist`: Path to custom TLD wordlist file (optional)
+- `-t, --threads`: Number of concurrent threads (default: 10)
+- `--timeout`: DNS query timeout in seconds (default: 2)
+- `--type`: Type of TLDs to check (choices: all, common, country, business, tech)
+- `-b, --bruteforce`: Enable TLD bruteforce mode
+- `--min-length`: Minimum TLD length for bruteforce mode (default: 2)
+- `--max-length`: Maximum TLD length for bruteforce mode (default: 3)
 
-## License
+## Example Output
 
-This project is open source and available under the MIT License.
+Normal mode:
+```
+Starting DNS TLD bruteforce for base domain: example
+Mode: TLD category (country)
+Testing 42 TLDs with 10 threads
 
-## Author
+[+] Found: example.pt
+    IP(s): 93.184.216.34
+    MX: mail.example.pt
 
-rfs85
+[+] Found: example.es
+    IP(s): 93.184.216.34
+    MX: mail.example.es
 
-## Acknowledgments
+[+] Found: example.fr
+    IP(s): 93.184.216.34
 
-- SecLists project for wordlists
-- Various public DNS providers
-- Open source security community
+Bruteforce complete. Found 3 valid domains.
+```
+
+Bruteforce mode:
+```
+Starting DNS TLD bruteforce for base domain: example
+Mode: Bruteforce
+Generating TLD combinations (length 2-3)...
+Generated 12876 TLD combinations
+Testing 12876 TLDs with 10 threads
+
+[+] Found: example.co.uk
+    IP(s): 93.184.216.34
+    MX: mail.example.co.uk
+
+Progress: 1000/12876 TLDs tested (7.8%)
+Progress: 2000/12876 TLDs tested (15.5%)
+...
+
+Bruteforce complete. Found 5 valid domains.
+```
+
+## Note
+
+This tool is for educational and legitimate security testing purposes only. Always ensure you have permission to test domains before using this tool.
