@@ -110,6 +110,51 @@ _TOOLS = {
         "requires_root": False,
         "order": 11,
         "loaded": False
+    },
+    "zone_walker": {
+        "name": "zone_walker",
+        "description": "DNSSEC Zone Walking and NSEC/NSEC3 Analysis",
+        "file": "dns_zone_walker.py",
+        "critical": True,
+        "requires_root": False,
+        "order": 12,
+        "loaded": False
+    },
+    "tunnel_detector": {
+        "name": "tunnel_detector",
+        "description": "Detect DNS Tunneling and Data Exfiltration",
+        "file": "dns_tunnel_detector.py",
+        "critical": True,
+        "requires_root": True,
+        "order": 13,
+        "loaded": False
+    },
+    "amp_tester": {
+        "name": "amp_tester",
+        "description": "DNS Amplification and Reflection Vulnerability Testing",
+        "file": "dns_amp_tester.py",
+        "critical": True,
+        "requires_root": True,
+        "order": 14,
+        "loaded": False
+    },
+    "privacy_scanner": {
+        "name": "privacy_scanner",
+        "description": "DNS Privacy, DoH, DoT, and DNSCrypt Testing",
+        "file": "dns_privacy_scanner.py",
+        "critical": False,
+        "requires_root": False,
+        "order": 15,
+        "loaded": False
+    },
+    "config_auditor": {
+        "name": "config_auditor",
+        "description": "DNS Configuration and Security Best Practices Analysis",
+        "file": "dns_config_auditor.py",
+        "critical": True,
+        "requires_root": False,
+        "order": 16,
+        "loaded": False
     }
 }
 

@@ -204,6 +204,114 @@ tools:
       include_ssl_info: true
       include_dns_records: true
 
+  zone_walker:
+    # Enable NSEC/NSEC3 walking
+    enable_nsec_walk: true
+    enable_nsec3_walk: true
+    # NSEC3 cracking settings
+    nsec3_cracking:
+      enabled: true
+      wordlist: "data/nsec3_wordlist.txt"
+      max_iterations: 1000
+    # Zone transfer settings
+    zone_transfer:
+      attempt_axfr: true
+      attempt_ixfr: true
+    # Chain analysis settings
+    chain_analysis:
+      verify_chain: true
+      report_gaps: true
+    # Performance settings
+    threads: 10
+    timeout: 5
+    
+  tunnel_detector:
+    # Detection methods
+    methods:
+      statistical: true
+      entropy: true
+      pattern_matching: true
+      signature_based: true
+    # Analysis settings
+    analysis:
+      min_sample_size: 1000
+      time_window: 300
+      entropy_threshold: 0.7
+    # Known signatures file
+    signatures_file: "data/tunnel_signatures.json"
+    # Logging settings
+    log_queries: true
+    log_matches: true
+    # Performance
+    threads: 15
+    packet_buffer: 10000
+    
+  amp_tester:
+    # Test types
+    tests:
+      open_resolver: true
+      edns0_abuse: true
+      any_abuse: true
+      tcp_fallback: true
+    # Safety settings
+    max_queries: 100
+    max_payload: 4096
+    safe_mode: true
+    # Thresholds
+    amplification_threshold: 10
+    response_size_threshold: 2048
+    # Rate limiting
+    queries_per_second: 10
+    
+  privacy_scanner:
+    # Protocol tests
+    test_doh: true
+    test_dot: true
+    test_dnscrypt: true
+    # DoH settings
+    doh:
+      paths:
+        - "/dns-query"
+        - "/resolve"
+      content_types:
+        - "application/dns-message"
+        - "application/dns-json"
+    # DoT settings
+    dot:
+      ports: [853, 853]
+      verify_cert: true
+    # DNSCrypt settings
+    dnscrypt:
+      check_stamps: true
+      verify_certs: true
+    # QNAME minimization
+    qname_minimization: true
+    # ECS checking
+    check_ecs: true
+    
+  config_auditor:
+    # Compliance checks
+    check_rfc: true
+    check_best_practices: true
+    # Security checks
+    security:
+      check_dnssec: true
+      check_caa: true
+      check_spf: true
+      check_dkim: true
+      check_dmarc: true
+    # Response headers
+    check_headers: true
+    # Zone configuration
+    zone_checks:
+      soa_settings: true
+      ns_diversity: true
+      mx_backup: true
+    # Reporting
+    detailed_report: true
+    include_recommendations: true
+    severity_levels: ["high", "medium", "low", "info"]
+
 # Reporting Settings
 reporting:
   html:
