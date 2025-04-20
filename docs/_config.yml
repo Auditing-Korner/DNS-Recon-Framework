@@ -1,0 +1,45 @@
+theme: jekyll-theme-cayman
+title: RFS DNS Framework
+description: A comprehensive DNS security testing and analysis framework
+show_downloads: true
+google_analytics:
+markdown: kramdown
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+# Navigation
+nav:
+  - title: Home
+    url: /
+  - title: Installation
+    url: /installation
+  - title: DNS Cache Poisoning
+    url: /dns-cache-poison
+  - title: Usage Guide
+    url: /usage
+  - title: API Reference
+    url: /api/
+  - title: Contributing
+    url: /contributing
+  - title: Security
+    url: /security
+
+# Footer links
+footer_links:
+  - title: GitHub
+    url: https://github.com/rfs85/RFS-DNS-Framework
+  - title: Issues
+    url: https://github.com/rfs85/RFS-DNS-Framework/issues
+  - title: License
+    url: https://github.com/rfs85/RFS-DNS-Framework/blob/main/LICENSE
+
+# SEO
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+# Site settings
+url: https://rfs85.github.io
+baseurl: /RFS-DNS-Framework
+repository: rfs85/RFS-DNS-Framework 

@@ -36,6 +36,9 @@ from datetime import datetime
 from pathlib import Path
 import html
 import jinja2  # For HTML report generation
+import string
+import textwrap
+import traceback
 
 try:
     import dns.resolver
@@ -65,13 +68,35 @@ init(autoreset=True)
 
 # Common wordlists for subdomain bruteforce
 WORDLIST_PATHS = {
-    "tiny": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-20000.txt",
+    # Quick testing wordlists
+    "tiny": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt",
     "small": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/namelist.txt",
-    "medium": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-5000.txt",
-    "large": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-20000.txt",
-    "xl": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-110000.txt",
-    "dns-jhaddix": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/dns-Jhaddix.txt",
-    "bitquark": "https://raw.githubusercontent.com/bitquark/dnspop/master/results/bitquark_20160227_subdomains_popular_1000"
+    
+    # Standard wordlists
+    "medium": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-20000.txt",
+    "large": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-110000.txt",
+    
+    # Comprehensive wordlists
+    "xl": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/dns-Jhaddix.txt",
+    "xxl": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/all.txt",
+    
+    # Specialized wordlists
+    "tech": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/tech-subdomains.txt",
+    "dev": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/dev-subdomains.txt",
+    "cloud": "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/cloud-subdomains.txt",
+    
+    # Popular subdomains
+    "bitquark": "https://raw.githubusercontent.com/bitquark/dnspop/master/results/bitquark_20160227_subdomains_popular_1000",
+    "commonspeak": "https://raw.githubusercontent.com/assetnote/commonspeak2-wordlists/master/subdomains/subdomains.txt"
+}
+
+# Wordlist categories for better organization
+WORDLIST_CATEGORIES = {
+    "quick": ["tiny", "small"],
+    "standard": ["medium", "large"],
+    "comprehensive": ["xl", "xxl"],
+    "specialized": ["tech", "dev", "cloud"],
+    "popular": ["bitquark", "commonspeak"]
 }
 
 # Cloud and hosting provider detection signatures
@@ -718,41 +743,134 @@ class DNSEnumerator:
         self.processed_subdomains = set()
         
     def _get_wordlist_path(self, wordlist):
-        """Get the path to the wordlist file"""
+        """Get the path to the wordlist file with improved handling and validation"""
         if not wordlist:
             return None
-        
-        # If it's a URL from our predefined list, download it
+            
+        # If it's a category, use all wordlists in that category
+        if wordlist in WORDLIST_CATEGORIES:
+            print(f"{Fore.BLUE}[*] Using {wordlist} category wordlists...")
+            wordlist_paths = []
+            for wl in WORDLIST_CATEGORIES[wordlist]:
+                path = self._download_wordlist(wl)
+                if path:
+                    wordlist_paths.append(path)
+            return wordlist_paths[0] if wordlist_paths else None
+            
+        # If it's a URL from our predefined list
         if wordlist in WORDLIST_PATHS:
-            url = WORDLIST_PATHS[wordlist]
-            wordlist_dir = os.path.join(os.path.expanduser("~"), ".dns_enum", "wordlists")
-            os.makedirs(wordlist_dir, exist_ok=True)
+            return self._download_wordlist(wordlist)
             
-            local_path = os.path.join(wordlist_dir, f"{wordlist}.txt")
-            
-            # Download if not exists
-            if not os.path.exists(local_path):
-                print(f"{Fore.YELLOW}[*] Downloading wordlist {wordlist}...")
-                try:
-                    response = requests.get(url)
-                    with open(local_path, 'wb') as f:
-                        f.write(response.content)
-                    print(f"{Fore.GREEN}[+] Wordlist downloaded to {local_path}")
-                except Exception as e:
-                    print(f"{Fore.RED}[!] Failed to download wordlist: {e}")
-                    return None
-            
-            return local_path
-        
         # If it's a path to an existing file
-        elif os.path.isfile(wordlist):
-            return wordlist
+        if os.path.isfile(wordlist):
+            # Validate file format
+            try:
+                with open(wordlist, 'r', encoding='utf-8', errors='ignore') as f:
+                    # Check first few lines
+                    for i, line in enumerate(f):
+                        if i >= 5:  # Check first 5 lines
+                            break
+                        if not line.strip() or not self._is_valid_subdomain(line.strip()):
+                            print(f"{Fore.RED}[!] Warning: File contains invalid subdomain format at line {i+1}")
+                            print(f"{Fore.RED}    Example line: {line.strip()}")
+                            if not self._confirm_continue():
+                                return None
+                return wordlist
+            except Exception as e:
+                print(f"{Fore.RED}[!] Error validating wordlist file: {e}")
+                return None
+                
+        # Otherwise, suggest available options
+        print(f"{Fore.RED}[!] Wordlist not found: {wordlist}")
+        self._suggest_wordlists()
+        return None
+
+    def _download_wordlist(self, wordlist_name):
+        """Download and validate a wordlist"""
+        url = WORDLIST_PATHS[wordlist_name]
+        wordlist_dir = os.path.join(os.path.expanduser("~"), ".dns_enum", "wordlists")
+        os.makedirs(wordlist_dir, exist_ok=True)
         
-        # Otherwise, assume it's a built-in name and try to find it
-        else:
-            print(f"{Fore.RED}[!] Wordlist not found: {wordlist}")
-            self._suggest_wordlists()
-            return None
+        local_path = os.path.join(wordlist_dir, f"{wordlist_name}.txt")
+        
+        # Download if not exists or if file is older than 30 days
+        should_download = not os.path.exists(local_path)
+        if not should_download and os.path.exists(local_path):
+            file_age = time.time() - os.path.getmtime(local_path)
+            if file_age > 30 * 24 * 60 * 60:  # 30 days
+                should_download = True
+                print(f"{Fore.YELLOW}[*] Wordlist is older than 30 days, updating...")
+        
+        if should_download:
+            print(f"{Fore.YELLOW}[*] Downloading wordlist {wordlist_name}...")
+            try:
+                response = requests.get(url, timeout=30)
+                response.raise_for_status()
+                
+                # Validate content before saving
+                content = response.text
+                valid_lines = []
+                total_lines = content.count('\n') + 1
+                invalid_lines = 0
+                
+                for line in content.splitlines():
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        if self._is_valid_subdomain(line):
+                            valid_lines.append(line)
+                        else:
+                            invalid_lines += 1
+                
+                if invalid_lines > 0:
+                    print(f"{Fore.YELLOW}[!] Found {invalid_lines} invalid lines in wordlist")
+                    if invalid_lines / total_lines > 0.1:  # More than 10% invalid
+                        print(f"{Fore.RED}[!] High number of invalid lines detected. Wordlist may be corrupted.")
+                        if not self._confirm_continue():
+                            return None
+                
+                # Save validated content
+                with open(local_path, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(valid_lines))
+                
+                print(f"{Fore.GREEN}[+] Wordlist downloaded and validated: {len(valid_lines)} subdomains")
+                
+            except Exception as e:
+                print(f"{Fore.RED}[!] Failed to download wordlist: {e}")
+                if os.path.exists(local_path):
+                    print(f"{Fore.YELLOW}[*] Using existing local copy")
+                    return local_path
+                return None
+        
+        return local_path
+
+    def _is_valid_subdomain(self, subdomain):
+        """Validate subdomain format"""
+        if not subdomain or len(subdomain) > 255:
+            return False
+            
+        # Check for valid characters
+        valid_chars = set(string.ascii_letters + string.digits + '.-_')
+        if not all(c in valid_chars for c in subdomain):
+            return False
+            
+        # Check parts length and format
+        parts = subdomain.split('.')
+        for part in parts:
+            if not part or len(part) > 63:
+                return False
+            if part.startswith('-') or part.endswith('-'):
+                return False
+                
+        return True
+
+    def _confirm_continue(self):
+        """Ask user to confirm continuation"""
+        while True:
+            response = input(f"{Fore.YELLOW}Do you want to continue anyway? (y/n): ").lower()
+            if response in ('y', 'yes'):
+                return True
+            if response in ('n', 'no'):
+                return False
     
     def _suggest_wordlists(self):
         """Suggest available wordlists"""
@@ -1084,7 +1202,7 @@ class DNSEnumerator:
         return count
     
     def bruteforce_subdomains(self):
-        """Bruteforce subdomains using the provided wordlist"""
+        """Bruteforce subdomains using the provided wordlist with improved memory management"""
         if not self.wordlist_path:
             print(f"{Fore.YELLOW}[!] No wordlist provided for subdomain bruteforcing")
             return
@@ -1097,23 +1215,29 @@ class DNSEnumerator:
                 print(f"{Fore.YELLOW}[*] Skipping subdomain bruteforce")
                 return
         
+        # Initialize statistics
+        stats = {
+            "start_time": time.time(),
+            "total_processed": 0,
+            "found_count": 0,
+            "error_count": 0,
+            "last_found": None,
+            "last_save": time.time()
+        }
+        
         # Count total subdomains to process
         print(f"{Fore.BLUE}[*] Counting subdomains in wordlist...")
         total_subdomains = self._count_wordlist_lines(self.wordlist_path)
         print(f"{Fore.BLUE}[*] Bruteforcing {total_subdomains} subdomains...")
         
-        # Set global variables for signal handling
-        global total_items, current_progress
-        total_items = total_subdomains
-        current_progress = 0
-        
         # Process subdomains in chunks to avoid memory issues
         chunk_size = min(1000, max(100, self.threads * 10))
         found_subdomains = []
         
-        subdomain_generator = self._subdomain_generator(self.wordlist_path)
-        
-        with tqdm(total=total_subdomains, desc="Bruteforcing subdomains") as pbar:
+        # Create progress bars
+        with tqdm(total=total_subdomains, desc="Overall Progress") as overall_pbar:
+            subdomain_generator = self._subdomain_generator(self.wordlist_path)
+            
             while True:
                 current_chunk = []
                 chunk_count = 0
@@ -1126,8 +1250,8 @@ class DNSEnumerator:
                         
                         # Skip if already processed
                         if fqdn in self.processed_subdomains:
-                            pbar.update(1)
-                            current_progress += 1
+                            overall_pbar.update(1)
+                            stats["total_processed"] += 1
                             continue
                             
                         current_chunk.append(subdomain)
@@ -1155,19 +1279,31 @@ class DNSEnumerator:
                         subdomain = future_to_subdomain[future]
                         fqdn = f"{subdomain}.{self.domain}"
                         self.processed_subdomains.add(fqdn)
-                        pbar.update(1)
-                        current_progress += 1
+                        overall_pbar.update(1)
+                        stats["total_processed"] += 1
                         
                         try:
                             result = future.result()
                             if result:
                                 found_subdomains.append(result)
+                                stats["found_count"] += 1
+                                stats["last_found"] = fqdn
+                                
                                 if self.verbose:
                                     ip_str = ", ".join(result.get("ips", []))
-                                    print(f"{Fore.GREEN}[+] Found: {result['name']} - {ip_str}")
+                                    print(f"\n{Fore.GREEN}[+] Found: {result['name']} - {ip_str}")
+                                    
+                                    # Show additional info if available
+                                    if result.get("provider"):
+                                        print(f"{Fore.GREEN}    Provider: {result['provider']['name']} (Confidence: {result['provider']['confidence']}%)")
+                                    if result.get("cname"):
+                                        print(f"{Fore.GREEN}    CNAME: {result['cname']}")
+                                    if result.get("takeover_possible"):
+                                        print(f"{Fore.RED}    [!] Potential Subdomain Takeover Detected!")
                         except Exception as e:
+                            stats["error_count"] += 1
                             if self.verbose:
-                                print(f"{Fore.RED}[!] Error checking {fqdn}: {e}")
+                                print(f"\n{Fore.RED}[!] Error checking {fqdn}: {e}")
                 
                 # Add results to the main data structure
                 for subdomain in found_subdomains:
@@ -1178,16 +1314,52 @@ class DNSEnumerator:
                 # Reset temp list to save memory
                 found_subdomains = []
                 
-                # Save cache periodically
-                if current_progress % 10000 == 0:
+                # Save cache and display stats periodically (every 5 minutes)
+                current_time = time.time()
+                if current_time - stats["last_save"] >= 300:  # 5 minutes
                     self._save_cache()
+                    self._display_bruteforce_stats(stats, total_subdomains)
+                    stats["last_save"] = current_time
                 
                 # Check if we were interrupted
                 if interrupted:
-                    print(f"{Fore.YELLOW}[!] Subdomain bruteforce interrupted")
+                    print(f"\n{Fore.YELLOW}[!] Subdomain bruteforce interrupted")
                     break
         
-        print(f"{Fore.GREEN}[+] Found {len(self.results['subdomains'])} subdomains")
+        # Final statistics
+        self._display_bruteforce_stats(stats, total_subdomains, final=True)
+        print(f"{Fore.GREEN}[+] Found {len(self.results['subdomains'])} total subdomains")
+    
+    def _display_bruteforce_stats(self, stats, total_subdomains, final=False):
+        """Display bruteforce statistics"""
+        elapsed_time = time.time() - stats["start_time"]
+        progress_percent = (stats["total_processed"] / total_subdomains) * 100
+        
+        if final:
+            print(f"\n{Fore.BLUE}=== Final Bruteforce Statistics ===")
+        else:
+            print(f"\n{Fore.BLUE}=== Bruteforce Progress Update ===")
+        
+        print(f"{Fore.BLUE}Progress: {progress_percent:.1f}% ({stats['total_processed']}/{total_subdomains})")
+        print(f"{Fore.BLUE}Elapsed Time: {elapsed_time/60:.1f} minutes")
+        print(f"{Fore.GREEN}Found Subdomains: {stats['found_count']}")
+        
+        if stats["error_count"] > 0:
+            print(f"{Fore.YELLOW}Errors Encountered: {stats['error_count']}")
+        
+        if stats["last_found"]:
+            print(f"{Fore.GREEN}Last Found: {stats['last_found']}")
+        
+        # Calculate rate
+        rate = stats["total_processed"] / elapsed_time if elapsed_time > 0 else 0
+        print(f"{Fore.BLUE}Processing Rate: {rate:.1f} domains/second")
+        
+        # Estimate completion
+        if not final and progress_percent < 100:
+            remaining = total_subdomains - stats["total_processed"]
+            eta_seconds = remaining / rate if rate > 0 else 0
+            eta_minutes = eta_seconds / 60
+            print(f"{Fore.BLUE}Estimated Time Remaining: {eta_minutes:.1f} minutes")
     
     def _check_subdomain(self, subdomain):
         """Check if a subdomain exists"""
@@ -2768,54 +2940,130 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 </html>'''
 
 def main():
-    parser = argparse.ArgumentParser(description="Advanced DNS Enumeration Tool")
+    parser = argparse.ArgumentParser(
+        description="Advanced DNS Enumeration Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""
+            Wordlist Categories:
+              quick         - Small wordlists for quick testing
+              standard     - Medium-sized wordlists for normal use
+              comprehensive - Large wordlists for thorough enumeration
+              specialized  - Wordlists focused on specific types (tech, dev, cloud)
+              popular      - Lists of commonly found subdomains
+            
+            Built-in Wordlists:
+              tiny        - ~5,000 subdomains (quick testing)
+              small       - ~3,000 subdomains (basic enumeration)
+              medium      - ~20,000 subdomains (standard scan)
+              large      - ~110,000 subdomains (thorough scan)
+              xl         - ~2,000,000 subdomains (extensive)
+              xxl        - Complete subdomain list (very large)
+              tech       - Technology-focused subdomains
+              dev        - Development-focused subdomains
+              cloud      - Cloud service subdomains
+              bitquark   - Top 1,000 most common subdomains
+              commonspeak - ML-generated common subdomains
+            
+            Examples:
+              %(prog)s example.com -w quick
+              %(prog)s example.com -w large --threads 20
+              %(prog)s example.com -w custom.txt --timeout 5
+              %(prog)s example.com -w medium --output results.json
+        """))
+    
+    # Required arguments
     parser.add_argument("domain", help="Target domain to enumerate")
-    parser.add_argument("-w", "--wordlist", help="Wordlist for subdomain bruteforcing (or use predefined: tiny, small, medium, large, xl, dns-jhaddix, bitquark)")
-    parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads for subdomain bruteforcing (default: 10)")
-    parser.add_argument("-o", "--output", help="Output file to save results")
-    parser.add_argument("-f", "--format", choices=["json", "csv", "txt", "html"], default="json", help="Output format (default: json)")
-    parser.add_argument("-n", "--nameserver", action="append", help="Custom nameserver to use (can be specified multiple times)")
-    parser.add_argument("--timeout", type=float, default=2.0, help="Timeout for DNS queries in seconds (default: 2.0)")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
-    parser.add_argument("-l", "--list-wordlists", action="store_true", help="List available built-in wordlists")
-    parser.add_argument("-d", "--depth", type=int, default=1, help="Recursion depth for subdomain discovery (default: 1)")
-    parser.add_argument("-r", "--rate-limit", type=int, default=0, help="Rate limit in queries per second (default: unlimited)")
-    parser.add_argument("--resolve-ips", action="store_true", help="Perform reverse DNS lookups on discovered IPs")
-    parser.add_argument("--no-wildcard-check", action="store_true", help="Skip wildcard DNS detection")
-    parser.add_argument("--resume", action="store_true", help="Resume from previous scan if available")
-    parser.add_argument("--no-provider-detection", action="store_true", help="Disable cloud provider detection")
-    parser.add_argument("--html-report", help="Generate HTML report and save to specified file")
+    
+    # Wordlist options
+    wordlist_group = parser.add_argument_group('Wordlist Options')
+    wordlist_group.add_argument("-w", "--wordlist", 
+                              help="Wordlist for subdomain bruteforcing (built-in name, category, or file path)")
+    wordlist_group.add_argument("-l", "--list-wordlists", action="store_true",
+                              help="List available built-in wordlists and categories")
+    
+    # Performance options
+    performance_group = parser.add_argument_group('Performance Options')
+    performance_group.add_argument("-t", "--threads", type=int, default=10,
+                                 help="Number of threads for subdomain bruteforcing (default: 10)")
+    performance_group.add_argument("--timeout", type=float, default=2.0,
+                                 help="Timeout for DNS queries in seconds (default: 2.0)")
+    performance_group.add_argument("-r", "--rate-limit", type=int, default=0,
+                                 help="Rate limit in queries per second (default: unlimited)")
+    
+    # Output options
+    output_group = parser.add_argument_group('Output Options')
+    output_group.add_argument("-o", "--output", help="Output file to save results")
+    output_group.add_argument("-f", "--format", choices=["json", "csv", "txt", "html"],
+                            default="json", help="Output format (default: json)")
+    output_group.add_argument("-v", "--verbose", action="store_true",
+                            help="Enable verbose output")
+    output_group.add_argument("--html-report", help="Generate HTML report and save to specified file")
+    
+    # DNS options
+    dns_group = parser.add_argument_group('DNS Options')
+    dns_group.add_argument("-n", "--nameserver", action="append",
+                          help="Custom nameserver to use (can be specified multiple times)")
+    dns_group.add_argument("-d", "--depth", type=int, default=1,
+                          help="Recursion depth for subdomain discovery (default: 1)")
+    dns_group.add_argument("--resolve-ips", action="store_true",
+                          help="Perform reverse DNS lookups on discovered IPs")
+    dns_group.add_argument("--no-wildcard-check", action="store_true",
+                          help="Skip wildcard DNS detection")
+    
+    # Advanced options
+    advanced_group = parser.add_argument_group('Advanced Options')
+    advanced_group.add_argument("--resume", action="store_true",
+                              help="Resume from previous scan if available")
+    advanced_group.add_argument("--no-provider-detection", action="store_true",
+                              help="Disable cloud provider detection")
     
     args = parser.parse_args()
     
     if args.list_wordlists:
-        print(f"{Fore.YELLOW}[*] Available wordlists:")
+        print(f"{Fore.YELLOW}=== Available Wordlist Categories ===")
+        for category, wordlists in WORDLIST_CATEGORIES.items():
+            print(f"\n{Fore.YELLOW}{category}:")
+            for wl in wordlists:
+                print(f"{Fore.YELLOW}  - {wl}")
+        
+        print(f"\n{Fore.YELLOW}=== Individual Wordlists ===")
         for name, url in WORDLIST_PATHS.items():
-            print(f"{Fore.YELLOW}    {name}")
+            print(f"{Fore.YELLOW}{name}:")
+            print(f"{Fore.YELLOW}  URL: {url}")
         return
     
-    enumerator = DNSEnumerator(
-        domain=args.domain,
-        nameservers=args.nameserver,
-        wordlist=args.wordlist,
-        threads=args.threads,
-        timeout=args.timeout,
-        output=args.output,
-        format=args.format,
-        verbose=args.verbose,
-        max_depth=args.depth,
-        rate_limit=args.rate_limit,
-        resolve_ips=args.resolve_ips,
-        check_wildcard=not args.no_wildcard_check,
-        resume=args.resume,
-        detect_providers=not args.no_provider_detection
-    )
-    
-    enumerator.run()
-    
-    # Generate HTML report if requested
-    if args.html_report:
-        enumerator.generate_html_report(args.html_report)
+    try:
+        enumerator = DNSEnumerator(
+            domain=args.domain,
+            nameservers=args.nameserver,
+            wordlist=args.wordlist,
+            threads=args.threads,
+            timeout=args.timeout,
+            output=args.output,
+            format=args.format,
+            verbose=args.verbose,
+            max_depth=args.depth,
+            rate_limit=args.rate_limit,
+            resolve_ips=args.resolve_ips,
+            check_wildcard=not args.no_wildcard_check,
+            resume=args.resume,
+            detect_providers=not args.no_provider_detection
+        )
+        
+        enumerator.run()
+        
+        # Generate HTML report if requested
+        if args.html_report:
+            enumerator.generate_html_report(args.html_report)
+            
+    except KeyboardInterrupt:
+        print(f"\n{Fore.YELLOW}[!] Scan interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n{Fore.RED}[!] Error: {str(e)}")
+        if args.verbose:
+            traceback.print_exc()
+        sys.exit(1)
 
 
 if __name__ == "__main__":

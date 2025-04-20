@@ -13,10 +13,13 @@ import os
 import re
 import requests
 import urllib3
+import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Set, Tuple
 from dataclasses import dataclass
 from colorama import Fore, Style, init
+from functools import lru_cache
+import time
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -36,10 +39,11 @@ class TakeoverResult:
     risk_level: str = "Medium"  # Added risk level field
 
 class CloudTakeoverDetector:
-    def __init__(self, domain: str, threads: int = 10, timeout: int = 5):
+    def __init__(self, domain: str, threads: int = 10, timeout: int = 5, selected_providers: List[str] = None):
         self.domain = domain
         self.threads = threads
         self.timeout = timeout
+        self.selected_providers = selected_providers
         self.resolver = dns.resolver.Resolver()
         self.resolver.timeout = timeout
         self.resolver.lifetime = timeout
@@ -47,8 +51,22 @@ class CloudTakeoverDetector:
         # Load cloud provider signatures
         self.providers = self._load_provider_signatures()
         
+        # Filter providers if specific ones are selected
+        if self.selected_providers:
+            self.providers = [p for p in self.providers if p['name'] in self.selected_providers]
+        
         # Results storage
         self.results: List[TakeoverResult] = []
+        
+        # DNS cache
+        self.dns_cache = {}
+        
+        # Provider CNAME patterns cache
+        self.provider_patterns = self._build_provider_patterns()
+        
+        # Provider detection optimization
+        self.provider_tld_map = self._build_provider_tld_map()
+        self.provider_keyword_map = self._build_provider_keyword_map()
 
     def _load_provider_signatures(self) -> Dict:
         """Load cloud provider signatures from providers.json"""
@@ -60,6 +78,10 @@ class CloudTakeoverDetector:
         except Exception as e:
             print(f"{Fore.RED}[!] Error loading provider signatures: {e}")
             return []
+
+    def list_available_providers(self) -> List[str]:
+        """Return a list of available cloud provider names"""
+        return [provider['name'] for provider in self._load_provider_signatures()]
 
     def _build_takeover_signatures(self) -> Dict[str, Dict]:
         """Build takeover signatures from provider data"""
@@ -75,7 +97,28 @@ class CloudTakeoverDetector:
                 "This page does not exist",
                 "The requested page could not be found",
                 "Resource not available",
-                "Service not available in your region"
+                "Service not available in your region",
+                "Page does not exist",
+                "Content not found",
+                "Site not accessible",
+                "Resource unavailable",
+                "Invalid URL",
+                "Page no longer exists",
+                "Content has been removed",
+                "Page has been deleted",
+                "Resource has been moved",
+                "Invalid request",
+                "Cannot find requested page",
+                "URL not found on server",
+                "Page missing",
+                "Content missing",
+                "Resource missing",
+                "Invalid path",
+                "Dead link",
+                "Broken link",
+                "Page offline",
+                "Site offline",
+                "Resource offline"
             ],
             "no_such_service": [
                 "NoSuchBucket",
@@ -87,7 +130,33 @@ class CloudTakeoverDetector:
                 "This service has been discontinued",
                 "Service not configured",
                 "Resource does not exist",
-                "Account suspended"
+                "Account suspended",
+                "Service not initialized",
+                "Resource not provisioned",
+                "Service not activated",
+                "Account not found",
+                "Service disabled",
+                "Resource deactivated",
+                "Service terminated",
+                "Account terminated",
+                "Service expired",
+                "Resource expired",
+                "Service deleted",
+                "Account deleted",
+                "Service removed",
+                "Resource removed",
+                "Service cancelled",
+                "Account cancelled",
+                "Service blocked",
+                "Account blocked",
+                "Service restricted",
+                "Account restricted",
+                "Service invalid",
+                "Account invalid",
+                "Service misconfigured",
+                "Account misconfigured",
+                "Service error",
+                "Account error"
             ],
             "unclaimed": [
                 "not been claimed",
@@ -101,7 +170,35 @@ class CloudTakeoverDetector:
                 "resource not found",
                 "service not initialized",
                 "pending activation",
-                "requires configuration"
+                "requires configuration",
+                "awaiting setup",
+                "not yet configured",
+                "setup incomplete",
+                "configuration required",
+                "registration pending",
+                "activation needed",
+                "setup required",
+                "domain inactive",
+                "resource inactive",
+                "service inactive",
+                "account inactive",
+                "pending registration",
+                "awaiting activation",
+                "needs configuration",
+                "requires setup",
+                "domain unclaimed",
+                "resource unclaimed",
+                "service unclaimed",
+                "account unclaimed",
+                "not yet activated",
+                "not yet registered",
+                "not yet initialized",
+                "initialization pending",
+                "setup pending",
+                "configuration pending",
+                "registration incomplete",
+                "activation incomplete",
+                "setup incomplete"
             ],
             "government": [
                 "government service unavailable",
@@ -123,7 +220,27 @@ class CloudTakeoverDetector:
                 "government cloud error",
                 "public sector service unavailable",
                 "state service not configured",
-                "national portal maintenance"
+                "national portal maintenance",
+                "government site offline",
+                "agency resource error",
+                "federal portal down",
+                "government service error",
+                "official website maintenance",
+                "department portal unavailable",
+                "government system error",
+                "public agency offline",
+                "state resource unavailable",
+                "federal website error",
+                "government access denied",
+                "agency system offline",
+                "official portal error",
+                "department website down",
+                "government resource error",
+                "public service offline",
+                "state agency error",
+                "federal resource down",
+                "government website maintenance",
+                "official system error"
             ],
             "military": [
                 "military service unavailable",
@@ -145,7 +262,27 @@ class CloudTakeoverDetector:
                 "secure portal error",
                 "restricted access error",
                 "military gateway timeout",
-                "defense network error"
+                "defense network error",
+                "military site offline",
+                "defense resource error",
+                "military portal down",
+                "defense service error",
+                "military website maintenance",
+                "defense portal unavailable",
+                "military system error",
+                "secure access denied",
+                "classified resource unavailable",
+                "military network down",
+                "defense system maintenance",
+                "military cloud error",
+                "secure gateway timeout",
+                "restricted portal offline",
+                "military resource error",
+                "defense website maintenance",
+                "secure service unavailable",
+                "classified system error",
+                "military access restricted",
+                "defense cloud maintenance"
             ],
             "isp": [
                 "business service not configured",
@@ -155,7 +292,29 @@ class CloudTakeoverDetector:
                 "enterprise service pending",
                 "business portal not setup",
                 "provider domain inactive",
-                "enterprise resource unavailable"
+                "enterprise resource unavailable",
+                "business service offline",
+                "enterprise portal error",
+                "business resource down",
+                "service provider error",
+                "enterprise system maintenance",
+                "business website unavailable",
+                "provider service inactive",
+                "enterprise cloud error",
+                "business platform down",
+                "service provider offline",
+                "enterprise network error",
+                "business portal maintenance",
+                "provider resource unavailable",
+                "enterprise service error",
+                "business system offline",
+                "service provider maintenance",
+                "enterprise website down",
+                "business cloud error",
+                "provider platform unavailable",
+                "enterprise resource error",
+                "business network maintenance",
+                "service provider restricted"
             ]
         }
         
@@ -180,7 +339,22 @@ class CloudTakeoverDetector:
                     "The AWS Access Key Id you provided does not exist",
                     "Repository not found",
                     "Error finding repository",
-                    "Failed to process your request"
+                    "Failed to process your request",
+                    "This bucket does not exist",
+                    "The bucket you are attempting to access must be addressed using the specified endpoint",
+                    "The bucket you are attempting to access is not configured",
+                    "This distribution does not exist",
+                    "CloudFront resource not found",
+                    "Invalid distribution configuration",
+                    "The Lambda function is not available",
+                    "API Gateway endpoint not found",
+                    "The API you are trying to access does not exist",
+                    "The specified API does not exist",
+                    "The specified stage does not exist",
+                    "Invalid API configuration",
+                    "The specified AWS Elastic Beanstalk environment does not exist",
+                    "The specified AWS Amplify app does not exist",
+                    "The specified AWS AppRunner service does not exist"
                 ])
                 signatures[name]["risk_level"] = "High"
             
@@ -192,7 +366,20 @@ class CloudTakeoverDetector:
                     "This Azure Static Web App has not been configured",
                     "This Azure Container App is not available",
                     "This AKS cluster is not accessible",
-                    "This storage account is not accessible"
+                    "This storage account is not accessible",
+                    "The specified Azure service does not exist",
+                    "The Azure resource you are looking for does not exist",
+                    "The specified Azure Function does not exist",
+                    "The Azure Static Web App has not been deployed",
+                    "The specified Azure Container Instance does not exist",
+                    "The Azure Kubernetes Service cluster is not found",
+                    "The specified Azure Storage Account does not exist",
+                    "The Azure App Service plan does not exist",
+                    "The specified Azure Logic App does not exist",
+                    "The Azure API Management service is not found",
+                    "The specified Azure CDN endpoint does not exist",
+                    "The Azure Front Door service is not configured",
+                    "The specified Azure Application Gateway does not exist"
                 ])
                 signatures[name]["risk_level"] = "High"
             
@@ -206,7 +393,18 @@ class CloudTakeoverDetector:
                     "The requested entity was not found",
                     "Could not find backend",
                     "Backend not found",
-                    "Resource not found in the API"
+                    "Resource not found in the API",
+                    "The specified Google Cloud Storage bucket does not exist",
+                    "The specified Cloud Run service does not exist",
+                    "The specified Cloud Function does not exist",
+                    "The App Engine application does not exist",
+                    "The specified GKE cluster does not exist",
+                    "The Cloud CDN configuration is not found",
+                    "The specified Load Balancer does not exist",
+                    "The Cloud Build trigger does not exist",
+                    "The specified Compute Engine instance does not exist",
+                    "The Cloud SQL instance does not exist",
+                    "The specified service account does not exist"
                 ])
                 signatures[name]["risk_level"] = "High"
             
@@ -231,7 +429,19 @@ class CloudTakeoverDetector:
                     "Application Error",
                     "no-such-app",
                     "The app you were looking for does not exist",
-                    "Heroku | No such app"
+                    "Heroku | No such app",
+                    "There's nothing here, yet",
+                    "The specified application does not exist",
+                    "The application you are looking for does not exist",
+                    "This Heroku application is not available",
+                    "The specified dyno type does not exist",
+                    "The specified add-on does not exist",
+                    "The specified pipeline does not exist",
+                    "The specified review app does not exist",
+                    "The specified team does not exist",
+                    "The specified buildpack does not exist",
+                    "The specified formation does not exist",
+                    "Application not found in this space"
                 ])
                 signatures[name]["risk_level"] = "High"
             
@@ -264,7 +474,21 @@ class CloudTakeoverDetector:
                     "Domain not found in system",
                     "The requested app does not exist",
                     "Application not found",
-                    "Droplet not found"
+                    "Droplet not found",
+                    "The specified Droplet does not exist",
+                    "The App Platform application does not exist",
+                    "The specified Kubernetes cluster does not exist",
+                    "The Load Balancer does not exist",
+                    "The specified database cluster does not exist",
+                    "The specified Space does not exist",
+                    "The specified container registry does not exist",
+                    "The specified Managed Database does not exist",
+                    "The specified Volume does not exist",
+                    "The specified Floating IP does not exist",
+                    "The specified Firewall does not exist",
+                    "The specified Project does not exist",
+                    "Resource not found in your account",
+                    "The specified resource has been deleted"
                 ])
                 signatures[name]["risk_level"] = "High"
             
@@ -934,72 +1158,274 @@ class CloudTakeoverDetector:
                 ])
                 signatures[name]["risk_level"] = "Critical"
 
+            # Add Cloudflare signatures
+            elif name == "Cloudflare":
+                signatures[name]["signatures"].extend([
+                    "DNS points to prohibited IP",
+                    "Direct IP access not allowed",
+                    "Please check your DNS settings",
+                    "Domain is not configured",
+                    "Error 1001",
+                    "Error 1002",
+                    "Error 1003",
+                    "Error 1004",
+                    "Error 1006",
+                    "Error 1007",
+                    "Error 1008",
+                    "Error 1009",
+                    "Error 1010",
+                    "Error 1011",
+                    "Error 1012",
+                    "Error 1013",
+                    "Error 1014",
+                    "Error 1015",
+                    "Error 1016",
+                    "Error 1018",
+                    "Error 1019",
+                    "Error 1020",
+                    "Error 1021",
+                    "Error 1022",
+                    "Error 1023",
+                    "Error 1024",
+                    "Error 1025",
+                    "Error 1026",
+                    "Error 1027",
+                    "Error 1028",
+                    "Error 1029",
+                    "Error 1030",
+                    "Error 1031",
+                    "Error 1032",
+                    "Error 1033",
+                    "Error 1034",
+                    "Error 1035",
+                    "Error 1036",
+                    "Error 1037",
+                    "Error 1038",
+                    "The specified Workers script does not exist",
+                    "The specified Pages project does not exist",
+                    "The specified Load Balancer does not exist",
+                    "The specified Stream does not exist",
+                    "The specified Access application does not exist",
+                    "The specified WAF rule does not exist",
+                    "The specified Zone does not exist",
+                    "The specified SSL certificate does not exist"
+                ])
+                signatures[name]["risk_level"] = "High"
+
         return signatures
+
+    def _build_provider_patterns(self) -> Dict[str, List[re.Pattern]]:
+        """Build compiled regex patterns for each provider's CNAME domains"""
+        patterns = {}
+        for provider in self.providers:
+            patterns[provider['name']] = [
+                re.compile(re.escape(domain), re.I) 
+                for domain in provider.get('dns_domains', [])
+            ]
+        return patterns
+
+    def _build_provider_tld_map(self) -> Dict[str, Set[str]]:
+        """Build a map of TLDs to potential providers for quick filtering"""
+        tld_map = {}
+        for provider in self.providers:
+            for domain in provider.get('dns_domains', []):
+                tld = domain.split('.')[-1]
+                if tld not in tld_map:
+                    tld_map[tld] = set()
+                tld_map[tld].add(provider['name'])
+        return tld_map
+
+    def _build_provider_keyword_map(self) -> Dict[str, Set[str]]:
+        """Build a map of keywords to potential providers for quick filtering"""
+        keyword_map = {}
+        for provider in self.providers:
+            for domain in provider.get('dns_domains', []):
+                parts = domain.split('.')
+                for part in parts[:-1]:  # Exclude TLD
+                    if len(part) > 3:  # Only use meaningful keywords
+                        if part not in keyword_map:
+                            keyword_map[part] = set()
+                        keyword_map[part].add(provider['name'])
+        return keyword_map
+
+    @lru_cache(maxsize=1024)
+    def _get_cname_record(self, subdomain: str) -> Optional[str]:
+        """Get CNAME record with caching"""
+        try:
+            if subdomain in self.dns_cache:
+                return self.dns_cache[subdomain]
+            
+            cname_answers = self.resolver.resolve(subdomain, 'CNAME')
+            cname = str(cname_answers[0].target).rstrip('.')
+            self.dns_cache[subdomain] = cname
+            return cname
+        except Exception:
+            return None
+
+    def _get_potential_providers(self, cname: str) -> Set[str]:
+        """Get potential providers based on TLD and keywords"""
+        potential_providers = set()
+        
+        # Check TLD
+        tld = cname.split('.')[-1]
+        if tld in self.provider_tld_map:
+            potential_providers.update(self.provider_tld_map[tld])
+        
+        # Check keywords
+        parts = cname.split('.')
+        for part in parts[:-1]:
+            if part in self.provider_keyword_map:
+                potential_providers.update(self.provider_keyword_map[part])
+        
+        # If no providers found or selected providers specified, return all providers
+        if not potential_providers or self.selected_providers:
+            return {p['name'] for p in self.providers}
+        
+        return potential_providers
+
+    def _match_provider(self, cname: str) -> Optional[str]:
+        """Match CNAME against provider patterns efficiently"""
+        # Get potential providers first
+        potential_providers = self._get_potential_providers(cname)
+        
+        # Only check patterns for potential providers
+        for provider_name, patterns in self.provider_patterns.items():
+            if provider_name in potential_providers:
+                for pattern in patterns:
+                    if pattern.search(cname):
+                        return provider_name
+        return None
+
+    async def _resolve_dns_concurrent(self, subdomains: List[str]) -> Dict[str, str]:
+        """Resolve DNS records concurrently"""
+        dns_results = {}
+        
+        def resolve_single(subdomain):
+            try:
+                cname = self._get_cname_record(subdomain)
+                if cname:
+                    dns_results[subdomain] = cname
+            except Exception:
+                pass
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as executor:
+            executor.map(resolve_single, subdomains)
+        
+        return dns_results
+
+    def _check_provider_vulnerability(self, subdomain: str, cname: str, provider_name: str) -> Optional[TakeoverResult]:
+        """Check for vulnerability with specific provider"""
+        signatures = self._build_takeover_signatures()
+        provider_data = signatures.get(provider_name, {})
+        
+        if not provider_data:
+            return None
+
+        # Provider-specific optimizations
+        if provider_name == "Amazon Web Services (AWS)":
+            # Check S3 bucket first
+            if any(p in cname for p in ['.s3.', '-s3-']):
+                try:
+                    response = requests.head(
+                        f"https://{subdomain}",
+                        timeout=self.timeout,
+                        allow_redirects=False
+                    )
+                    if response.status_code in [404, 403]:
+                        return TakeoverResult(
+                            subdomain=subdomain,
+                            provider=provider_name,
+                            cname=cname,
+                            vulnerability_type="Unclaimed S3 Bucket",
+                            evidence="S3 bucket not properly configured",
+                            status_code=response.status_code,
+                            is_vulnerable=True,
+                            risk_level="High"
+                        )
+                except:
+                    pass
+
+        elif provider_name == "Microsoft Azure":
+            # Check Azure services first
+            if '.azurewebsites.' in cname:
+                try:
+                    response = requests.get(
+                        f"https://{subdomain}",
+                        timeout=self.timeout,
+                        allow_redirects=False
+                    )
+                    if response.status_code == 404:
+                        return TakeoverResult(
+                            subdomain=subdomain,
+                            provider=provider_name,
+                            cname=cname,
+                            vulnerability_type="Unclaimed Azure Web App",
+                            evidence="Azure Web App not configured",
+                            status_code=response.status_code,
+                            is_vulnerable=True,
+                            risk_level="High"
+                        )
+                except:
+                    pass
+        
+        # Try to fetch the domain with both protocols
+        for protocol in ['https', 'http']:
+            try:
+                response = requests.get(
+                    f"{protocol}://{subdomain}",
+                    timeout=self.timeout,
+                    allow_redirects=True,
+                    verify=False,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
+                )
+                content = response.text.lower()
+                
+                # Check for takeover signatures
+                for signature in provider_data.get("signatures", []):
+                    if signature.lower() in content:
+                        return TakeoverResult(
+                            subdomain=subdomain,
+                            provider=provider_name,
+                            cname=cname,
+                            vulnerability_type="Unclaimed Service",
+                            evidence=signature,
+                            status_code=response.status_code,
+                            is_vulnerable=True,
+                            risk_level=provider_data.get("risk_level", "Medium")
+                        )
+            except requests.exceptions.RequestException:
+                continue
+        
+        # If we can't connect at all, might indicate takeover possibility
+        return TakeoverResult(
+            subdomain=subdomain,
+            provider=provider_name,
+            cname=cname,
+            vulnerability_type="Unreachable Service",
+            evidence="Connection failed",
+            status_code=0,
+            is_vulnerable=True,
+            risk_level=provider_data.get("risk_level", "Medium")
+        )
 
     def check_subdomain(self, subdomain: str) -> Optional[TakeoverResult]:
         """Check a single subdomain for takeover vulnerabilities"""
         try:
             # Get CNAME record
-            try:
-                cname_answers = self.resolver.resolve(subdomain, 'CNAME')
-                cname = str(cname_answers[0].target).rstrip('.')
-            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+            cname = self._get_cname_record(subdomain)
+            if not cname:
                 return None
-            except Exception:
-                return None
-
-            # Check each provider
-            signatures = self._build_takeover_signatures()
-            for provider_name, provider_data in signatures.items():
-                # Check if CNAME matches provider patterns
-                for pattern in provider_data["cname_patterns"]:
-                    if re.search(pattern, cname, re.I):
-                        # Try to fetch the domain
-                        try:
-                            for protocol in ['https', 'http']:
-                                try:
-                                    response = requests.get(
-                                        f"{protocol}://{subdomain}",
-                                        timeout=self.timeout,
-                                        allow_redirects=True,
-                                        verify=False,
-                                        headers={
-                                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                                        }
-                                    )
-                                    content = response.text.lower()
-                                    
-                                    # Check for takeover signatures
-                                    for signature in provider_data["signatures"]:
-                                        if signature.lower() in content:
-                                            return TakeoverResult(
-                                                subdomain=subdomain,
-                                                provider=provider_name,
-                                                cname=cname,
-                                                vulnerability_type="Unclaimed Service",
-                                                evidence=signature,
-                                                status_code=response.status_code,
-                                                is_vulnerable=True,
-                                                risk_level=provider_data["risk_level"]
-                                            )
-                                except requests.exceptions.RequestException:
-                                    continue
-                            
-                            # If we can't connect at all, might indicate takeover possibility
-                            return TakeoverResult(
-                                subdomain=subdomain,
-                                provider=provider_name,
-                                cname=cname,
-                                vulnerability_type="Unreachable Service",
-                                evidence="Connection failed",
-                                status_code=0,
-                                is_vulnerable=True,
-                                risk_level=provider_data["risk_level"]
-                            )
-                        except Exception:
-                            continue
             
-            return None
+            # Match provider
+            provider_name = self._match_provider(cname)
+            if not provider_name:
+                return None
+            
+            # Check for vulnerability
+            return self._check_provider_vulnerability(subdomain, cname, provider_name)
+            
         except Exception as e:
             print(f"{Fore.RED}[!] Error checking {subdomain}: {e}")
             return None
@@ -1008,11 +1434,34 @@ class CloudTakeoverDetector:
         """Scan a list of subdomains for takeover vulnerabilities"""
         print(f"{Fore.BLUE}[*] Starting subdomain takeover scan...")
         print(f"{Fore.BLUE}[*] Checking {len(subdomains)} subdomains against {len(self.providers)} providers")
-
+        
+        start_time = time.time()
+        
+        # First, resolve all DNS records concurrently
+        print(f"{Fore.BLUE}[*] Resolving DNS records...")
+        dns_results = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as executor:
+            future_to_subdomain = {
+                executor.submit(self._get_cname_record, subdomain): subdomain 
+                for subdomain in subdomains
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_subdomain):
+                subdomain = future_to_subdomain[future]
+                try:
+                    cname = future.result()
+                    if cname:
+                        dns_results[subdomain] = cname
+                except Exception:
+                    continue
+        
+        print(f"{Fore.BLUE}[*] Found {len(dns_results)} CNAME records")
+        
+        # Then, check for vulnerabilities concurrently
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as executor:
             future_to_subdomain = {
                 executor.submit(self.check_subdomain, subdomain): subdomain 
-                for subdomain in subdomains
+                for subdomain, cname in dns_results.items()
             }
             
             for future in concurrent.futures.as_completed(future_to_subdomain):
@@ -1030,7 +1479,11 @@ class CloudTakeoverDetector:
                         print(f"{risk_color}    Evidence: {result.evidence}")
                 except Exception as e:
                     print(f"{Fore.RED}[!] Error scanning {subdomain}: {e}")
-
+        
+        end_time = time.time()
+        duration = end_time - start_time
+        print(f"{Fore.GREEN}[+] Scan completed in {duration:.2f} seconds")
+        
         return self.results
 
     def generate_report(self, output_file: str = None):
@@ -1211,13 +1664,35 @@ def main():
     parser.add_argument("--timeout", type=int, default=5, help="Timeout for requests")
     parser.add_argument("--risk-level", choices=["all", "high", "medium", "low"],
                       default="all", help="Filter results by risk level")
+    parser.add_argument("-p", "--providers", nargs="+", help="Specific cloud providers to test (space-separated names)")
+    parser.add_argument("--list-providers", action="store_true", help="List available cloud providers and exit")
     args = parser.parse_args()
+
+    # Create a temporary detector to list providers
+    if args.list_providers:
+        temp_detector = CloudTakeoverDetector(domain="example.com")
+        providers = temp_detector.list_available_providers()
+        print(f"\n{Fore.GREEN}Available Cloud Providers:")
+        for provider in providers:
+            print(f"{Fore.BLUE}  - {provider}")
+        sys.exit(0)
+
+    # Validate selected providers if specified
+    if args.providers:
+        temp_detector = CloudTakeoverDetector(domain="example.com")
+        available_providers = temp_detector.list_available_providers()
+        invalid_providers = [p for p in args.providers if p not in available_providers]
+        if invalid_providers:
+            print(f"{Fore.RED}[!] Error: Invalid provider(s): {', '.join(invalid_providers)}")
+            print(f"{Fore.YELLOW}Available providers: {', '.join(available_providers)}")
+            sys.exit(1)
 
     # Initialize detector
     detector = CloudTakeoverDetector(
         domain=args.domain,
         threads=args.threads,
-        timeout=args.timeout
+        timeout=args.timeout,
+        selected_providers=args.providers
     )
 
     # Get subdomains
@@ -1244,6 +1719,12 @@ def main():
         print(f"{Fore.RED}    High Risk: {report['scan_results']['findings_by_risk']['High']}")
         print(f"{Fore.YELLOW}    Medium Risk: {report['scan_results']['findings_by_risk']['Medium']}")
         print(f"{Fore.BLUE}    Low Risk: {report['scan_results']['findings_by_risk']['Low']}")
+        
+        if args.providers:
+            print(f"\n{Fore.GREEN}[+] Scanned Providers:")
+            for provider in args.providers:
+                provider_results = [r for r in results if r.provider == provider]
+                print(f"{Fore.BLUE}    {provider}: {len(provider_results)} findings")
     else:
         print(f"{Fore.GREEN}[+] No subdomain takeover vulnerabilities found")
 
