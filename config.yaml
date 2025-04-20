@@ -1,0 +1,277 @@
+# RFS DNS Framework Configuration
+version: "2.1.0"
+
+# General Framework Settings
+general:
+  # Output directory for results
+  output_dir: "results"
+  # Default report format (json, html, both)
+  default_report_format: "both"
+  # Maximum number of concurrent threads
+  max_threads: 15
+  # Enable debug logging
+  debug: false
+  # Cache directory for temporary files
+  cache_dir: ".cache"
+  # Default timeout for operations (seconds)
+  default_timeout: 20
+  # Rate limiting (requests per second, 0 for no limit)
+  rate_limit: 100
+  # DNS query timeout (seconds)
+  query_timeout: 3.0
+
+# DNS Settings
+dns:
+  # Default DNS resolvers
+  nameservers:
+    - "1.1.1.1"
+    - "9.9.9.9"
+    - "8.8.8.8"
+    - "208.67.222.222"
+  # DNS query timeout (seconds)
+  query_timeout: 3
+  # Enable DNSSEC validation
+  dnssec_validation: true
+  # DNS record types to query
+  record_types:
+    - "A"
+    - "AAAA"
+    - "MX"
+    - "NS"
+    - "TXT"
+    - "SOA"
+    - "CNAME"
+    - "SRV"
+  # Retry count for DNS queries
+  retry_count: 2
+  # Retry delay between queries (seconds)
+  retry_delay: 0.5
+
+# Tool-specific Settings
+tools:
+  dns_enum:
+    # Maximum recursion depth for subdomain enumeration
+    max_depth: 3
+    # Wordlist for bruteforce (relative to data directory)
+    wordlist: "wordlists/subdomains-top10000.txt"
+    # Maximum number of threads for enumeration
+    threads: 15
+    # Enable wildcard detection
+    check_wildcard: true
+    # Enable zone transfer attempts
+    try_zone_transfer: true
+    # Enable enumeration
+    enabled: true
+
+  cloud_enum:
+    # Cloud providers to check
+    providers:
+      - "aws"
+      - "azure"
+      - "gcp"
+      - "digitalocean"
+      - "cloudflare"
+      - "alibaba"
+      - "oracle"
+    # Provider signature database
+    signatures_file: "data/cloud_signatures.json"
+    # Confidence threshold for detection (%)
+    confidence_threshold: 65
+
+  takeover:
+    # Threads for subdomain takeover checks
+    threads: 15
+    # Timeout for each check (seconds)
+    timeout: 8
+    # Skip verification of SSL certificates
+    skip_ssl_verify: true
+    # Custom fingerprints file
+    fingerprints_file: "data/takeover_fingerprints.json"
+
+  mobile_gw:
+    # Ports to scan for each gateway type
+    ports:
+      ggsn: [2123, 2152, 3386]
+      pgw: [2123, 2152, 8080, 8443]
+      sgw: [2123, 2152]
+      mme: [36412, 36422, 36424]
+      sgsn: [2123, 3386, 23000]
+      hss: [3868, 3869, 3870]
+      pcrf: [3868, 8080, 8443]
+    # Timeout for port scans (seconds)
+    scan_timeout: 3
+    # Enable protocol-specific tests
+    protocol_tests: true
+
+  cache_poisoning:
+    # Number of poisoning attempts
+    max_attempts: 500
+    # Duration of test (seconds)
+    duration: 20
+    # Enable advanced detection methods
+    advanced_detection: true
+    # Safe mode (no actual poisoning)
+    safe_mode: true
+    # Enable poisoning
+    enabled: false  # Disabled by default for safety
+    # Test queries
+    test_queries: 50
+
+  dnssec_check:
+    # Enable DNSSEC validation
+    enabled: true
+    # Validate DNSSEC signatures
+    validate_signatures: true
+
+  resolver_test:
+    # Enable resolver test
+    enabled: true
+    # Test DNS recursion
+    test_recursion: true
+    # Test EDNS
+    test_edns: true
+    
+  # New tools configurations
+  ssl_scanner:
+    # Ports to scan for SSL/TLS
+    ports: [443, 8443, 4443, 636, 993, 995, 465, 25]
+    # Connection timeout (seconds)
+    timeout: 3
+    # Verify SSL certificates (for test connections)
+    verify_ssl: false
+    # Check subdomains when scanning
+    check_subdomains: true
+    # Maximum threads for concurrent scans
+    threads: 15
+    # Enable specific vulnerability checks
+    enable_checks:
+      heartbleed: true
+      robot: true
+      weak_ciphers: true
+      cert_validity: true
+      beast: true
+      poodle: true
+      freak: true
+      logjam: true
+      
+  dns_takeover:
+    # Maximum threads for scanning
+    threads: 25
+    # Connection timeout (seconds)
+    timeout: 3
+    # Verify SSL certificates during checks
+    verify_ssl: false
+    # Auto-enumerate subdomains during scan
+    auto_enumerate: true
+    # Custom fingerprints file
+    fingerprints_file: "data/takeover_fingerprints.json"
+    # User agent to use for HTTP requests
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+  subdomain_takeover:
+    # Maximum threads for scanning
+    threads: 20
+    # Connection timeout (seconds)
+    timeout: 10
+    # Verify SSL certificates
+    verify_ssl: false
+    # Enable passive enumeration
+    passive_enum: true
+    # Enable active enumeration
+    active_enum: true
+    # Custom DNS servers
+    dns_servers: []
+    # Provider signatures file
+    providers_file: "data/providers.json"
+    # Output format (json, html, text)
+    output_format: "json"
+    # User agent for HTTP requests
+    user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    # Risk level thresholds
+    risk_levels:
+      high: 80
+      medium: 50
+      low: 20
+    # Enable specific features
+    features:
+      ssl_checks: true
+      http_checks: true
+      dns_checks: true
+      cname_checks: true
+    # Reporting options
+    reporting:
+      include_evidence: true
+      include_ssl_info: true
+      include_dns_records: true
+
+# Reporting Settings
+reporting:
+  html:
+    # Theme for HTML reports (light, dark)
+    theme: "dark"
+    # Include interactive charts
+    interactive_charts: true
+    # Chart library to use (plotly, chart.js)
+    chart_library: "plotly"
+    # Company logo for reports (relative to assets directory)
+    logo: "assets/logo.png"
+    # Custom CSS file
+    custom_css: "assets/custom.css"
+    include_summary_table: true
+    include_risk_dashboard: true
+
+  json:
+    # Pretty print JSON output
+    pretty_print: true
+    # Include timestamps in output
+    include_timestamps: true
+    # Include tool metadata
+    include_metadata: true
+    include_raw_data: false
+
+# Logging Settings
+logging:
+  # Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  level: "INFO"
+  # Log file location
+  file_output: true
+  log_dir: "logs"
+  # Maximum log file size (MB)
+  max_file_size: 5242880  # 5MB
+  # Number of backup files to keep
+  backup_count: 3
+  # Include timestamps in logs
+  timestamp_format: "%Y-%m-%d %H:%M:%S"
+  # Enable console output
+  console_output: true
+  log_rotation: true
+
+# API Keys (DO NOT COMMIT SENSITIVE KEYS)
+api_keys:
+  # Cloud provider API keys
+  aws:
+    access_key: ""
+    secret_key: ""
+  azure:
+    subscription_id: ""
+    tenant_id: ""
+  gcp:
+    project_id: ""
+    credentials_file: ""
+  # Other service API keys
+  shodan: ""
+  censys: ""
+  virustotal: ""
+  securitytrails: ""
+  passivetotal: ""
+
+# Development Settings
+development:
+  # Enable development features
+  enabled: false
+  # Mock external API calls
+  mock_apis: false
+  # Profile code execution
+  profiling: false
+  # Test mode (no actual changes)
+  test_mode: false 

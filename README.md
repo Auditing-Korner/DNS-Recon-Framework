@@ -1,195 +1,151 @@
 # RFS DNS Framework
 
-A comprehensive DNS reconnaissance and security assessment framework consisting of multiple specialized tools for DNS enumeration, cloud provider detection, subdomain takeover detection, and TLD discovery.
+Comprehensive DNS Security Testing Framework
+
+## Overview
+
+RFS DNS Framework is a comprehensive security testing framework focused on DNS infrastructure. It provides a collection of tools for DNS enumeration, vulnerability assessment, and security testing, all integrated into a single cohesive framework.
 
 ## Features
 
-### Core Components
-
-1. **DNS Enumerator (`dns_enum.py`)**
-   - Comprehensive DNS record enumeration (A, AAAA, CNAME, MX, NS, TXT, SOA, etc.)
-   - DNSSEC analysis and validation
-   - Zone transfer attempts
-   - Subdomain bruteforcing with memory-efficient processing
-   - Wildcard detection and filtering
-   - DNS infrastructure analysis
-   - Result caching for interrupted scans
-   - Multiple export formats (JSON, CSV, TXT, HTML)
-   - Security header analysis
-   - Email security configuration checks
-   - Detailed HTML report generation
-
-2. **DNS Server Finder (`find_dnsserver.py`)**
-   - DNS server discovery and testing
-   - Support for multiple DNS protocols (UDP/TCP)
-   - Colored output for better readability
-   - Response time measurement
-   - Custom timeout configuration
-   - Support for various DNS server lists:
-     - Top public DNS servers
-     - Country-specific servers (Netherlands, Egypt)
-     - Provider-specific servers (Vodafone)
-     - Root DNS servers
-     - AWS DNS servers
-
-3. **Cloud Provider Enumerator (`enumerate_cloud_providers.py`)**
-   - Detection and analysis of cloud service providers
-   - DNS record analysis for provider identification
-   - Provider categorization
-   - Infrastructure mapping
-   - Detailed provider analysis
-   - Support for major cloud providers:
-     - AWS, Azure, GCP, Cloudflare
-     - DigitalOcean, Heroku, Netlify
-     - And many more
-
-4. **TLD Bruteforcer (`dns_tld_bruteforce.py`)**
-   - Multi-threaded TLD discovery
-   - Categorized TLD lists:
-     - Common TLDs (.com, .net, .org, etc.)
-     - Country-code TLDs
-     - Business TLDs
-     - Tech TLDs
-   - Advanced bruteforce mode
-   - Custom wordlist support
-   - Progress tracking
-   - MX record detection
-
-5. **Cloud Takeover Detector (`cloud_takeover_detector.py`)**
-   - Subdomain takeover vulnerability detection
-   - Support for multiple cloud providers
-   - Risk assessment and categorization
-   - Detailed vulnerability reporting
-   - Remediation guidance
-   - Support for various service types:
-     - Cloud Storage (S3, Azure Blob, etc.)
-     - Web Hosting (GitHub Pages, Netlify, etc.)
-     - CDN Services (Cloudflare, Fastly, etc.)
-     - Government and Military Services
-     - Enterprise Service Providers
+- **Modular Architecture**: Multiple specialized tools integrated into one framework
+- **Comprehensive DNS Enumeration**: Discover subdomains, DNS records, and infrastructure
+- **Vulnerability Detection**: Identify common DNS security issues
+- **Cloud Provider Detection**: Identify usage of cloud services
+- **Mobile Gateway Detection**: Scan for 3GPP mobile network gateways
+- **SSL/TLS Security Scanning**: Analyze SSL/TLS configurations for vulnerabilities
+- **Subdomain Takeover Detection**: Identify vulnerable subdomains
+- **Reporting**: Generate comprehensive HTML and JSON reports
 
 ## Installation
 
-1. Clone this repository:
-```bash
-git clone https://github.com/yourusername/RFS-DNS-Framework.git
-cd RFS-DNS-Framework
-```
+### Requirements
 
-2. Install the required dependencies:
-```bash
-pip install -r requirements.txt
-```
+- Python 3.7+
+- Required Python packages (see requirements.txt)
+
+### Setup
+
+1. Clone the repository:
+   ```
+   git clone https://github.com/rfs85/RFS-DNS-Framework.git
+   cd RFS-DNS-Framework
+   ```
+
+2. Install dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
 
 ## Usage
 
-### DNS Enumeration
-```bash
-python dns_enum.py example.com [options]
-# For comprehensive DNS enumeration and analysis
+### Basic Usage
+
+Run the framework's help command to see all available options:
+
+```
+python rfs_dns_framework.py --help
 ```
 
-### Find DNS Servers
-```bash
-python find_dnsserver.py google.com
-# Test domain resolution against various DNS servers
+### List Available Tools
 
-# Test specific DNS server
-python find_dnsserver.py google.com -s 8.8.8.8
-
-# Test against top public DNS servers
-python find_dnsserver.py google.com --top
+```
+python rfs_dns_framework.py --list-tools
 ```
 
-### Cloud Provider Enumeration
-```bash
-python enumerate_cloud_providers.py
-# List and analyze cloud providers
+### Running a Specific Tool
 
-# Enumerate specific provider
-python enumerate_cloud_providers.py -p "Amazon Web Services"
+Example running the DNS enumeration tool:
 
-# Show DNS information
-python enumerate_cloud_providers.py -d "Microsoft Azure"
+```
+python rfs_dns_framework.py --tool dns_enum example.com
 ```
 
-### TLD Bruteforce
-```bash
-python dns_tld_bruteforce.py example
-# Basic TLD discovery
+### Running a Full Workflow
 
-# Use specific TLD category
-python dns_tld_bruteforce.py example --type country
-
-# Enable bruteforce mode
-python dns_tld_bruteforce.py example -b --min-length 2 --max-length 3
+```
+python rfs_dns_framework.py --workflow --domain example.com --output-dir results
 ```
 
-### Cloud Takeover Detection
-```bash
-python cloud_takeover_detector.py example.com
-# Basic takeover scan
+### Tool-Specific Examples
 
-# Scan with custom subdomain list
-python cloud_takeover_detector.py example.com -s subdomains.txt
+#### DNS Enumeration
 
-# Generate detailed report
-python cloud_takeover_detector.py example.com -o report.json
+```
+python rfs_dns_framework.py --tool dns_enum example.com
 ```
 
-## Advanced Features
+#### Mobile Gateway Enumeration
 
-### DNS Enumeration
-- DNSSEC validation and analysis
-- Email security configuration checks
-- Infrastructure analysis
-- Security header analysis
-- HTML report generation
-- Multiple export formats
+Scan a specific IP or range for mobile gateways:
 
-### Cloud Provider Detection
-- Provider fingerprinting
-- Service categorization
-- Risk assessment
-- Infrastructure mapping
-- Detailed provider analysis
+```
+python rfs_dns_framework.py --tool mobile_gw 10.0.0.1
+```
 
-### TLD Discovery
-- Pattern-based generation
-- Category-based scanning
-- Custom wordlist support
-- Progress tracking
-- Rate limiting
+Scan for a specific gateway type:
 
-### Takeover Detection
-- Risk categorization
-- Remediation guidance
-- Provider-specific checks
-- Detailed vulnerability reporting
-- Multi-threaded scanning
+```
+python rfs_dns_framework.py --tool mobile_gw 10.0.0.0/24 --gateway-type P-GW
+```
 
-## Security Considerations
+#### SSL/TLS Scanner
 
-- Always ensure you have permission to test domains
-- Use rate limiting when necessary
-- Follow responsible disclosure practices
-- Be cautious with government and military domains
-- Respect usage policies of DNS servers
+Scan domain for SSL/TLS vulnerabilities:
 
-## Contributing
+```
+python rfs_dns_framework.py --tool ssl_scanner example.com
+```
 
-Contributions are welcome! Please feel free to submit pull requests or create issues for bugs and feature requests.
+Scan specific ports:
+
+```
+python rfs_dns_framework.py --tool ssl_scanner example.com --ports 443,8443
+```
+
+#### DNS Takeover Scanner
+
+Scan for subdomain takeover vulnerabilities:
+
+```
+python rfs_dns_framework.py --tool dns_takeover example.com
+```
+
+Provide a list of subdomains to check:
+
+```
+python rfs_dns_framework.py --tool dns_takeover example.com --subdomains subdomains.txt
+```
+
+## Configuration
+
+The framework behavior can be customized through the `config.yaml` file. This file controls various aspects of the tools, including:
+
+- DNS settings (resolvers, query timeouts, etc.)
+- Tool-specific configurations
+- Reporting preferences
+- Logging settings
+
+## Available Tools
+
+| Tool Name | Description |
+|-----------|-------------|
+| dns_enum | Comprehensive DNS enumeration and analysis |
+| find_server | Discover and test DNS servers |
+| cloud_enum | Detect and analyze cloud service providers |
+| tld_brute | Multi-threaded TLD discovery |
+| takeover | Identify subdomain takeover vulnerabilities |
+| seizure | Identify law enforcement domain seizures |
+| mobile_gw | Enumerate 3GPP Mobile Gateways |
+| cache_poison | DNS cache poisoning detection |
+| ssl_scanner | SSL/TLS security scanner |
+| dns_takeover | DNS subdomain takeover vulnerability scanner |
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+Copyright (c) 2023 rfs85
 
 ## Author
 
-rfs85
-
-## Acknowledgments
-
-- DNS Python library contributors
-- Cloud provider documentation
-- Security research community
+- rfs85
+- GitHub: https://github.com/rfs85/RFS-DNS-Framework

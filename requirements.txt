@@ -1,7 +1,60 @@
-requests==2.31.0
-dnspython==2.4.2
-rich==13.7.0
-tqdm>=4.67.1
+# Core dependencies
+rich>=10.0.0
+dnspython>=2.1.0
+requests>=2.25.0
+pyyaml>=6.0
+jinja2>=3.0.0
+
+# Network tools
+scapy>=2.4.5
+ipaddress>=1.0.23
+cryptography>=36.0.0
+pyopenssl>=21.0.0
+
+# Concurrency
+concurrent-futures>=3.0.0; python_version < '3.2'
+
+# Optional dependencies
+shodan>=1.25.0
+censys>=2.0.0
+
+# Core Framework Dependencies
+plotly>=5.18.0
 colorama>=0.4.6
-jinja2>=3.1.6
-scapy>=2.5.0 
+python-whois>=0.8.0
+beautifulsoup4>=4.9.3
+tqdm>=4.66.1
+aiohttp>=3.9.1
+aiodns>=3.0.0
+pycryptodome>=3.10.1
+netaddr>=0.8.0
+ipwhois>=1.2.0
+validators>=0.18.2
+urllib3>=2.0.7
+idna>=3.2
+chardet>=4.0.0
+certifi>=2021.5.30
+
+# DNS Tools Dependencies
+tqdm>=4.66.0
+
+# Cloud Provider Detection
+boto3>=1.28.0
+azure-mgmt-dns>=8.1.0
+google-cloud-dns>=0.34.0
+
+# Mobile Gateway Tools
+# Note: GTP support is built into scapy, no need for separate scapy-gtp
+scapy[complete]>=2.4.5  # Complete installation with all extras
+pyrad>=2.4
+
+# Output Formatting
+tabulate>=0.9.0
+markdown>=3.5.0
+
+# Optional Dependencies (uncomment if needed)
+#paramiko>=3.3.0  # For SSH operations
+#pysnmp>=4.4.12   # For SNMP operations
+
+# Added from the code block
+pyyaml>=6.0.1 

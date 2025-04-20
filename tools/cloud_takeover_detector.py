@@ -21,6 +21,12 @@ from colorama import Fore, Style, init
 from functools import lru_cache
 import time
 
+try:
+    from .base_tool import BaseTool, ToolResult
+except ImportError:
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from tools.base_tool import BaseTool, ToolResult
+
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -38,35 +44,103 @@ class TakeoverResult:
     is_vulnerable: bool
     risk_level: str = "Medium"  # Added risk level field
 
-class CloudTakeoverDetector:
-    def __init__(self, domain: str, threads: int = 10, timeout: int = 5, selected_providers: List[str] = None):
-        self.domain = domain
-        self.threads = threads
-        self.timeout = timeout
-        self.selected_providers = selected_providers
+class CloudTakeoverDetector(BaseTool):
+    def __init__(self):
+        super().__init__(
+            name="cloud_takeover",
+            description="Cloud Provider Subdomain Takeover Detector"
+        )
+        self.domain = None
+        self.threads = 10
+        self.timeout = 5
+        self.selected_providers = None
+        self.results = []
+        self.errors = []
         self.resolver = dns.resolver.Resolver()
-        self.resolver.timeout = timeout
-        self.resolver.lifetime = timeout
-        
-        # Load cloud provider signatures
-        self.providers = self._load_provider_signatures()
-        
-        # Filter providers if specific ones are selected
-        if self.selected_providers:
-            self.providers = [p for p in self.providers if p['name'] in self.selected_providers]
-        
-        # Results storage
-        self.results: List[TakeoverResult] = []
-        
-        # DNS cache
         self.dns_cache = {}
         
-        # Provider CNAME patterns cache
+        # Load provider signatures for detection
+        self.signatures = self._load_provider_signatures()
+        self.providers = self.list_available_providers()
         self.provider_patterns = self._build_provider_patterns()
-        
-        # Provider detection optimization
-        self.provider_tld_map = self._build_provider_tld_map()
-        self.provider_keyword_map = self._build_provider_keyword_map()
+        self.provider_tlds = self._build_provider_tld_map()
+        self.provider_keywords = self._build_provider_keyword_map()
+
+    def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
+        """Set up argument parsing for the tool"""
+        super().setup_argparse(parser)
+        parser.add_argument("domain", help="Target domain to scan")
+        parser.add_argument("-s", "--subdomains", help="File containing list of subdomains")
+        parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads")
+        parser.add_argument("--timeout", type=int, default=5, help="Timeout for requests")
+        parser.add_argument("--risk-level", choices=["all", "high", "medium", "low"],
+                          default="all", help="Filter results by risk level")
+        parser.add_argument("-p", "--providers", nargs="+", help="Specific cloud providers to test (space-separated names)")
+        parser.add_argument("--list-providers", action="store_true", help="List available cloud providers and exit")
+
+    def run(self, args: argparse.Namespace) -> ToolResult:
+        """Run the tool with the given arguments"""
+        tool_result = ToolResult(
+            success=True,
+            tool_name=self.name,
+            findings=[],
+            metadata={"domain": args.domain}
+        )
+
+        try:
+            # Initialize tool settings
+            self.domain = args.domain
+            self.threads = args.threads
+            self.timeout = args.timeout
+            self.selected_providers = args.providers
+            self.resolver.timeout = args.timeout
+            self.resolver.lifetime = args.timeout
+
+            # List providers if requested
+            if args.list_providers:
+                providers = self.list_available_providers()
+                tool_result.add_finding(
+                    "Available Cloud Providers",
+                    "\n".join(providers),
+                    "info",
+                    "List of supported cloud providers"
+                )
+                return tool_result
+
+            # Get subdomains to scan
+            subdomains = []
+            if args.subdomains:
+                try:
+                    with open(args.subdomains, 'r') as f:
+                        subdomains = [line.strip() for line in f if line.strip()]
+                except Exception as e:
+                    tool_result.add_error(f"Error reading subdomain file: {str(e)}")
+                    return tool_result
+            else:
+                subdomains = [args.domain]
+
+            # Run the scan
+            results = self.scan_subdomains(subdomains)
+
+            # Filter results by risk level if specified
+            if args.risk_level != "all":
+                results = [r for r in results if r.risk_level.lower() == args.risk_level.lower()]
+
+            # Add findings to tool result
+            for result in results:
+                tool_result.add_finding(
+                    title=f"Potential takeover: {result.subdomain}",
+                    description=f"Provider: {result.provider}\nType: {result.vulnerability_type}\nCNAME: {result.cname}",
+                    risk_level=result.risk_level,
+                    evidence=result.evidence
+                )
+
+            return tool_result
+
+        except Exception as e:
+            tool_result.success = False
+            tool_result.add_error(f"Error during scan: {str(e)}")
+            return tool_result
 
     def _load_provider_signatures(self) -> Dict:
         """Load cloud provider signatures from providers.json"""
@@ -1268,14 +1342,14 @@ class CloudTakeoverDetector:
         
         # Check TLD
         tld = cname.split('.')[-1]
-        if tld in self.provider_tld_map:
-            potential_providers.update(self.provider_tld_map[tld])
+        if tld in self.provider_tlds:
+            potential_providers.update(self.provider_tlds[tld])
         
         # Check keywords
         parts = cname.split('.')
         for part in parts[:-1]:
-            if part in self.provider_keyword_map:
-                potential_providers.update(self.provider_keyword_map[part])
+            if part in self.provider_keywords:
+                potential_providers.update(self.provider_keywords[part])
         
         # If no providers found or selected providers specified, return all providers
         if not potential_providers or self.selected_providers:
@@ -1654,123 +1728,8 @@ class CloudTakeoverDetector:
         return steps
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Cloud Provider Subdomain Takeover Detector"
-    )
-    parser.add_argument("domain", help="Target domain to scan")
-    parser.add_argument("-s", "--subdomains", help="File containing list of subdomains")
-    parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads")
-    parser.add_argument("-o", "--output", help="Output file for JSON report")
-    parser.add_argument("--timeout", type=int, default=5, help="Timeout for requests")
-    parser.add_argument("--risk-level", choices=["all", "high", "medium", "low"],
-                      default="all", help="Filter results by risk level")
-    parser.add_argument("-p", "--providers", nargs="+", help="Specific cloud providers to test (space-separated names)")
-    parser.add_argument("--list-providers", action="store_true", help="List available cloud providers and exit")
-    parser.add_argument("--framework-mode", action="store_true", help="Run in framework integration mode")
-    args = parser.parse_args()
-
-    # Create a temporary detector to list providers
-    if args.list_providers:
-        temp_detector = CloudTakeoverDetector(domain="example.com")
-        providers = temp_detector.list_available_providers()
-        print(f"\n{Fore.GREEN}Available Cloud Providers:")
-        for provider in providers:
-            print(f"{Fore.BLUE}  - {provider}")
-        sys.exit(0)
-
-    # Validate selected providers if specified
-    if args.providers:
-        temp_detector = CloudTakeoverDetector(domain="example.com")
-        available_providers = temp_detector.list_available_providers()
-        invalid_providers = [p for p in args.providers if p not in available_providers]
-        if invalid_providers:
-            print(f"{Fore.RED}[!] Error: Invalid provider(s): {', '.join(invalid_providers)}")
-            print(f"{Fore.YELLOW}Available providers: {', '.join(available_providers)}")
-            sys.exit(1)
-
-    # Initialize detector
-    detector = CloudTakeoverDetector(
-        domain=args.domain,
-        threads=args.threads,
-        timeout=args.timeout,
-        selected_providers=args.providers
-    )
-
-    # Get subdomains
-    subdomains = []
-    if args.subdomains:
-        try:
-            with open(args.subdomains, 'r') as f:
-                subdomains = [line.strip() for line in f if line.strip()]
-        except Exception as e:
-            print(f"{Fore.RED}[!] Error reading subdomain file: {e}")
-            sys.exit(1)
-    else:
-        # In framework mode, we expect the domain to be a subdomain
-        if args.framework_mode:
-            subdomains = [args.domain]
-        else:
-            print(f"{Fore.YELLOW}[!] No subdomain list provided. Will only scan the main domain.")
-            subdomains = [args.domain]
-
-    try:
-        # Run the scan
-        results = detector.scan_subdomains(subdomains)
-
-        # Filter results by risk level if specified
-        if args.risk_level != "all":
-            results = [r for r in results if r.risk_level.lower() == args.risk_level.lower()]
-
-        # Generate report
-        if results:
-            report = detector.generate_report(args.output)
-            
-            if args.framework_mode:
-                # Framework-specific output format
-                framework_output = {
-                    "status": "success",
-                    "vulnerabilities": report['scan_results']['total_vulnerabilities'],
-                    "findings": report['scan_results']['findings'],
-                    "risk_summary": report['scan_results']['findings_by_risk']
-                }
-                print(json.dumps(framework_output))
-            else:
-                # Standard CLI output
-                print(f"\n{Fore.GREEN}[+] Scan Summary:")
-                print(f"{Fore.GREEN}    Total vulnerabilities: {report['scan_results']['total_vulnerabilities']}")
-                print(f"{Fore.RED}    High Risk: {report['scan_results']['findings_by_risk']['High']}")
-                print(f"{Fore.YELLOW}    Medium Risk: {report['scan_results']['findings_by_risk']['Medium']}")
-                print(f"{Fore.BLUE}    Low Risk: {report['scan_results']['findings_by_risk']['Low']}")
-                
-                if args.providers:
-                    print(f"\n{Fore.GREEN}[+] Scanned Providers:")
-                    for provider in args.providers:
-                        provider_results = [r for r in results if r.provider == provider]
-                        print(f"{Fore.BLUE}    {provider}: {len(provider_results)} findings")
-        else:
-            if args.framework_mode:
-                print(json.dumps({
-                    "status": "success",
-                    "vulnerabilities": 0,
-                    "findings": [],
-                    "risk_summary": {"High": 0, "Medium": 0, "Low": 0}
-                }))
-            else:
-                print(f"{Fore.GREEN}[+] No subdomain takeover vulnerabilities found")
-
-    except Exception as e:
-        error_msg = str(e)
-        if args.framework_mode:
-            print(json.dumps({
-                "status": "error",
-                "error": error_msg,
-                "vulnerabilities": 0,
-                "findings": [],
-                "risk_summary": {"High": 0, "Medium": 0, "Low": 0}
-            }))
-        else:
-            print(f"{Fore.RED}[!] Error during scan: {error_msg}")
-        sys.exit(1)
+    tool = CloudTakeoverDetector()
+    return tool.main()
 
 if __name__ == "__main__":
     try:
