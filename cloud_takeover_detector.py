@@ -1666,6 +1666,7 @@ def main():
                       default="all", help="Filter results by risk level")
     parser.add_argument("-p", "--providers", nargs="+", help="Specific cloud providers to test (space-separated names)")
     parser.add_argument("--list-providers", action="store_true", help="List available cloud providers and exit")
+    parser.add_argument("--framework-mode", action="store_true", help="Run in framework integration mode")
     args = parser.parse_args()
 
     # Create a temporary detector to list providers
@@ -1698,35 +1699,85 @@ def main():
     # Get subdomains
     subdomains = []
     if args.subdomains:
-        with open(args.subdomains, 'r') as f:
-            subdomains = [line.strip() for line in f if line.strip()]
+        try:
+            with open(args.subdomains, 'r') as f:
+                subdomains = [line.strip() for line in f if line.strip()]
+        except Exception as e:
+            print(f"{Fore.RED}[!] Error reading subdomain file: {e}")
+            sys.exit(1)
     else:
-        print(f"{Fore.YELLOW}[!] No subdomain list provided. Will only scan the main domain.")
-        subdomains = [args.domain]
+        # In framework mode, we expect the domain to be a subdomain
+        if args.framework_mode:
+            subdomains = [args.domain]
+        else:
+            print(f"{Fore.YELLOW}[!] No subdomain list provided. Will only scan the main domain.")
+            subdomains = [args.domain]
 
-    # Run the scan
-    results = detector.scan_subdomains(subdomains)
+    try:
+        # Run the scan
+        results = detector.scan_subdomains(subdomains)
 
-    # Filter results by risk level if specified
-    if args.risk_level != "all":
-        results = [r for r in results if r.risk_level.lower() == args.risk_level.lower()]
+        # Filter results by risk level if specified
+        if args.risk_level != "all":
+            results = [r for r in results if r.risk_level.lower() == args.risk_level.lower()]
 
-    # Generate report
-    if results:
-        report = detector.generate_report(args.output)
-        print(f"\n{Fore.GREEN}[+] Scan Summary:")
-        print(f"{Fore.GREEN}    Total vulnerabilities: {report['scan_results']['total_vulnerabilities']}")
-        print(f"{Fore.RED}    High Risk: {report['scan_results']['findings_by_risk']['High']}")
-        print(f"{Fore.YELLOW}    Medium Risk: {report['scan_results']['findings_by_risk']['Medium']}")
-        print(f"{Fore.BLUE}    Low Risk: {report['scan_results']['findings_by_risk']['Low']}")
-        
-        if args.providers:
-            print(f"\n{Fore.GREEN}[+] Scanned Providers:")
-            for provider in args.providers:
-                provider_results = [r for r in results if r.provider == provider]
-                print(f"{Fore.BLUE}    {provider}: {len(provider_results)} findings")
-    else:
-        print(f"{Fore.GREEN}[+] No subdomain takeover vulnerabilities found")
+        # Generate report
+        if results:
+            report = detector.generate_report(args.output)
+            
+            if args.framework_mode:
+                # Framework-specific output format
+                framework_output = {
+                    "status": "success",
+                    "vulnerabilities": report['scan_results']['total_vulnerabilities'],
+                    "findings": report['scan_results']['findings'],
+                    "risk_summary": report['scan_results']['findings_by_risk']
+                }
+                print(json.dumps(framework_output))
+            else:
+                # Standard CLI output
+                print(f"\n{Fore.GREEN}[+] Scan Summary:")
+                print(f"{Fore.GREEN}    Total vulnerabilities: {report['scan_results']['total_vulnerabilities']}")
+                print(f"{Fore.RED}    High Risk: {report['scan_results']['findings_by_risk']['High']}")
+                print(f"{Fore.YELLOW}    Medium Risk: {report['scan_results']['findings_by_risk']['Medium']}")
+                print(f"{Fore.BLUE}    Low Risk: {report['scan_results']['findings_by_risk']['Low']}")
+                
+                if args.providers:
+                    print(f"\n{Fore.GREEN}[+] Scanned Providers:")
+                    for provider in args.providers:
+                        provider_results = [r for r in results if r.provider == provider]
+                        print(f"{Fore.BLUE}    {provider}: {len(provider_results)} findings")
+        else:
+            if args.framework_mode:
+                print(json.dumps({
+                    "status": "success",
+                    "vulnerabilities": 0,
+                    "findings": [],
+                    "risk_summary": {"High": 0, "Medium": 0, "Low": 0}
+                }))
+            else:
+                print(f"{Fore.GREEN}[+] No subdomain takeover vulnerabilities found")
+
+    except Exception as e:
+        error_msg = str(e)
+        if args.framework_mode:
+            print(json.dumps({
+                "status": "error",
+                "error": error_msg,
+                "vulnerabilities": 0,
+                "findings": [],
+                "risk_summary": {"High": 0, "Medium": 0, "Low": 0}
+            }))
+        else:
+            print(f"{Fore.RED}[!] Error during scan: {error_msg}")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    main() 
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n[!] Operation interrupted by user")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n[!] Error: {str(e)}")
+        sys.exit(1) 
