@@ -695,6 +695,7 @@ signal.signal(signal.SIGINT, handle_interrupt)
 
 class DNSEnumerator(BaseTool):
     def __init__(self):
+        """Initialize the DNS Enumerator tool"""
         super().__init__(
             name="dns-enum",
             description="Comprehensive DNS enumeration and analysis"
@@ -767,705 +768,86 @@ class DNSEnumerator(BaseTool):
         parser.add_argument('--no-provider-detection', action='store_true',
                           help='Skip cloud provider detection')
 
-    def check_dependencies(self) -> Tuple[bool, Optional[str]]:
-        """Check if required dependencies are available"""
-        try:
-            import dns.resolver
-            import dns.zone
-            import dns.query
-            import requests
-            return True, None
-        except ImportError as e:
-            return False, f"Missing dependency: {str(e)}"
-
     def run(self, args: argparse.Namespace) -> ToolResult:
         """Run the tool with the given arguments"""
-        # Store arguments
-        self.args = args
-        self.domain = args.domain.lower()
-        self.timeout = args.timeout
-        self.threads = args.threads
-        self.output = args.output
-        self.format = args.output_format
-        self.verbose = args.verbose
-        self.max_depth = args.depth
-        self.rate_limit = args.rate_limit
-        self.resolve_ips = args.resolve_ips
-        self.check_wildcard = not args.no_wildcard_check
-        self.resume = args.resume
-        self.detect_providers = not args.no_provider_detection
-        self.wordlist = args.wordlist if hasattr(args, 'wordlist') else None
-        
-        # Configure resolver with updated timeout
-        self.resolver.timeout = self.timeout
-        self.resolver.lifetime = self.timeout
-        
-        # Update metadata
-        self.results["metadata"]["domain"] = self.domain
-        self.results["metadata"]["scan_time"] = datetime.now().isoformat()
-        self.results["metadata"]["arguments"] = {
-            "timeout": self.timeout,
-            "threads": self.threads,
-            "resolve_ips": self.resolve_ips,
-            "check_wildcard": self.check_wildcard,
-            "detect_providers": self.detect_providers,
-            "max_depth": self.max_depth
-        }
-        
-        # If listing wordlists was requested
-        if hasattr(args, 'list') and args.list:
-            self._list_wordlists()
-            # Create an empty result since we're just listing wordlists
+        try:
+            # Initialize tool result
             result = ToolResult(
                 success=True,
                 tool_name=self.name,
                 findings=[],
-                metadata={"action": "list_wordlists"}
+                metadata={}
             )
+            
+            # Store arguments
+            self.args = args
+            self.domain = args.domain.lower()
+            self.timeout = args.timeout
+            self.threads = args.threads
+            self.output = args.output
+            self.format = args.output_format
+            self.verbose = args.verbose
+            self.max_depth = args.depth
+            self.rate_limit = args.rate_limit
+            self.resolve_ips = args.resolve_ips
+            self.check_wildcard = not args.no_wildcard_check
+            self.resume = args.resume
+            self.detect_providers = not args.no_provider_detection
+            self.wordlist = args.wordlist if hasattr(args, 'wordlist') else None
+            
+            # Configure resolver with updated timeout
+            self.resolver.timeout = self.timeout
+            self.resolver.lifetime = self.timeout
+            
+            # Update metadata
+            self.results["metadata"].update({
+                "domain": self.domain,
+                "scan_time": datetime.now().isoformat(),
+                "arguments": {
+                    "timeout": self.timeout,
+                    "threads": self.threads,
+                    "resolve_ips": self.resolve_ips,
+                    "check_wildcard": self.check_wildcard,
+                    "detect_providers": self.detect_providers,
+                    "max_depth": self.max_depth
+                }
+            })
+            
+            # If listing wordlists was requested
+            if hasattr(args, 'list') and args.list:
+                self._list_wordlists()
+                result.metadata["action"] = "list_wordlists"
+                return result
+            
+            # Run enumeration
+            self.run_enumeration()
+            
+            # Process results and add findings
+            self._process_results(result)
+            
+            # Save results if output file specified
+            if self.output:
+                self._save_results(self.output, self.format)
+            
             return result
-        
-        # Run enumeration
-        self.run_enumeration()
-        
-        # Create tool result
-        result = ToolResult(
-            success=True,
-            tool_name=self.name,
-            findings=[],
-            metadata=self.results
-        )
-        
-        # Add findings based on results
-        self._add_findings_to_result(result)
-        
-        # Finalize the result before returning
-        result.finalize()
-        
-        return result
-
-    def run_enumeration(self):
-        """Run the full DNS enumeration process"""
-        if self.framework_mode:
-            self.logger.info(f"Starting DNS enumeration for {self.domain}")
-        else:
-            print(f"[*] Starting DNS enumeration for {self.domain}")
-        
-        start_time = time.time()
-        
-        try:
-            # Detect nameservers
-            self.detect_nameservers()
             
-            # Enumerate DNS records
-            self.enumerate_records()
-            
-            # Attempt zone transfer
-            self.attempt_zone_transfer()
-            
-            # Check for wildcard DNS if enabled
-            if self.check_wildcard:
-                self.detect_wildcard_dns()
-            
-            # Perform subdomain enumeration
-            self.enumerate_subdomains()
-            
-            # Additional analysis
-            if len(self.results["subdomains"]) > 0:
-                self.analyze_infrastructure()
-                if self.resolve_ips:
-                    self.reverse_lookup_ips()
-                    
-            # Detect cloud hosting providers if enabled
-            if self.detect_providers:
-                self.detect_cloud_providers()
-            
-            # Calculate execution time
-            end_time = time.time()
-            execution_time = end_time - start_time
-            self.results["metadata"]["execution_time_seconds"] = execution_time
-            
-            if self.framework_mode:
-                self.logger.info(f"DNS enumeration completed in {execution_time:.2f} seconds")
-            else:
-                print(f"[+] DNS enumeration completed in {execution_time:.2f} seconds")
-                
         except Exception as e:
             error_msg = f"Error during DNS enumeration: {str(e)}"
             if self.framework_mode:
                 self.logger.error(error_msg)
+                if self.verbose:
+                    self.logger.debug(traceback.format_exc())
             else:
                 print(f"[!] {error_msg}")
-            # Add error to results
-            if "errors" not in self.results["metadata"]:
-                self.results["metadata"]["errors"] = []
-            self.results["metadata"]["errors"].append(str(e))
-            
-            # Include traceback in verbose mode
-            if self.verbose:
-                if "debug_info" not in self.results["metadata"]:
-                    self.results["metadata"]["debug_info"] = []
-                self.results["metadata"]["debug_info"].append(traceback.format_exc())
-                
-                if not self.framework_mode:
+                if self.verbose:
                     print(traceback.format_exc())
-
-    def detect_nameservers(self):
-        """Detect authoritative nameservers for the domain"""
-        if self.framework_mode:
-            self.logger.info("Detecting nameservers...")
-        else:
-            print("[*] Detecting nameservers...")
-        
-        try:
-            ns_records = dns.resolver.resolve(self.domain, 'NS')
-            for record in ns_records:
-                ns_hostname = str(record.target).rstrip('.')
-                try:
-                    ns_ip = socket.gethostbyname(ns_hostname)
-                    self.results["nameservers"].append({
-                        "hostname": ns_hostname,
-                        "ip": ns_ip
-                    })
-                    
-                    message = f"Found nameserver: {ns_hostname} ({ns_ip})"
-                    if self.framework_mode:
-                        self.logger.info(message)
-                    else:
-                        print(f"[+] {message}")
-                        
-                except socket.gaierror:
-                    message = f"Could not resolve IP for nameserver: {ns_hostname}"
-                    if self.framework_mode:
-                        self.logger.warning(message)
-                    else:
-                        print(f"[!] {message}")
-        except Exception as e:
-            message = f"Error detecting nameservers: {e}"
-            if self.framework_mode:
-                self.logger.error(message)
-            else:
-                print(f"[!] {message}")
-
-    def enumerate_records(self):
-        """Enumerate common DNS record types"""
-        if self.framework_mode:
-            self.logger.info("Enumerating DNS records...")
-        else:
-            print("[*] Enumerating DNS records...")
             
-        record_types = ['A', 'AAAA', 'MX', 'TXT', 'NS', 'SOA', 'CNAME']
-        
-        for record_type in record_types:
-            try:
-                answers = dns.resolver.resolve(self.domain, record_type)
-                self.results["records"][record_type] = [str(rdata) for rdata in answers]
-                
-                message = f"Found {len(answers)} {record_type} record(s)"
-                if self.framework_mode:
-                    self.logger.info(message)
-                else:
-                    print(f"[+] {message}")
-            except:
-                continue
+            result.success = False
+            result.add_error(error_msg)
+            return result
 
-    def attempt_zone_transfer(self):
-        """Attempt zone transfer with each nameserver"""
-        if self.framework_mode:
-            self.logger.info("Attempting zone transfer...")
-        else:
-            print("[*] Attempting zone transfer...")
-            
-        self.results["zone_transfer"]["attempted"] = True
-        
-        for ns in self.results["nameservers"]:
-            try:
-                zone = dns.zone.from_xfr(dns.query.xfr(ns["ip"], self.domain))
-                self.results["zone_transfer"]["successful"] = True
-                self.results["zone_transfer"]["results"].extend([
-                    str(name) + " " + str(node.rdatasets)
-                    for name, node in zone.nodes.items()
-                ])
-                
-                message = f"Zone transfer successful from {ns['hostname']}"
-                if self.framework_mode:
-                    self.logger.warning(message)
-                else:
-                    print(f"[!] {message}")
-                break
-            except:
-                continue
-
-    def detect_wildcard_dns(self):
-        """Detect wildcard DNS records"""
-        if self.framework_mode:
-            self.logger.info("Checking for wildcard DNS...")
-        else:
-            print("[*] Checking for wildcard DNS...")
-            
-        test_subdomains = [
-            f"wildcard-test-{random.randint(100000,999999)}" for _ in range(3)
-        ]
-        
-        wildcard_ips = set()
-        for subdomain in test_subdomains:
-            try:
-                answers = dns.resolver.resolve(f"{subdomain}.{self.domain}", 'A')
-                wildcard_ips.update([str(rdata) for rdata in answers])
-            except:
-                continue
-        
-        if wildcard_ips:
-            self.results["wildcard_detection"]["detected"] = True
-            self.results["wildcard_detection"]["ips"] = list(wildcard_ips)
-            
-            message = f"Wildcard DNS detected: {', '.join(wildcard_ips)}"
-            if self.framework_mode:
-                self.logger.warning(message)
-            else:
-                print(f"[!] {message}")
-
-    def enumerate_subdomains(self):
-        """Enumerate subdomains using various techniques"""
-        if self.framework_mode:
-            self.logger.info("Enumerating subdomains...")
-        else:
-            print("[*] Enumerating subdomains...")
-        
-        # Start with basic enumeration techniques
-        self._enumerate_common_subdomains()
-        
-        # If we have a wordlist, use it for brute force
-        if self.wordlist:
-            self._bruteforce_subdomains()
-
-    def _enumerate_common_subdomains(self):
-        """Enumerate common subdomains"""
-        common_subdomains = ['www', 'mail', 'remote', 'blog', 'webmail', 'server',
-                           'ns1', 'ns2', 'smtp', 'secure', 'vpn', 'api', 'admin',
-                           'ftp', 'test', 'portal', 'dev', 'staging', 'apps', 'shop']
-        
-        found_count = 0
-        for subdomain in common_subdomains:
-            fqdn = f"{subdomain}.{self.domain}"
-            try:
-                answers = dns.resolver.resolve(fqdn, 'A')
-                self.results["subdomains"].append({
-                    "name": fqdn,
-                    "type": "A",
-                    "ips": [str(rdata) for rdata in answers]
-                })
-                
-                message = f"Found subdomain: {fqdn}"
-                if self.framework_mode:
-                    self.logger.info(message)
-                else:
-                    print(f"[+] {message}")
-                    
-                found_count += 1
-            except:
-                continue
-                
-        if found_count == 0:
-            message = "No common subdomains found"
-            if self.framework_mode:
-                self.logger.info(message)
-            else:
-                print(f"[*] {message}")
-        else:
-            message = f"Found {found_count} common subdomains"
-            if self.framework_mode:
-                self.logger.info(message)
-            else:
-                print(f"[+] {message}")
-
-    def _list_wordlists(self):
-        """List available wordlists for subdomain enumeration"""
-        if self.framework_mode:
-            self.logger.info("Available wordlists:")
-            for category, wordlists in WORDLIST_CATEGORIES.items():
-                self.logger.info(f"  {category.upper()}:")
-                for wl in wordlists:
-                    url = WORDLIST_PATHS.get(wl, "N/A")
-                    self.logger.info(f"    - {wl}: {url}")
-        else:
-            print(f"\n[*] Available Wordlists:")
-            for category, wordlists in WORDLIST_CATEGORIES.items():
-                print(f"\n  {category.upper()}:")
-                for wl in wordlists:
-                    url = WORDLIST_PATHS.get(wl, "N/A")
-                    print(f"    - {wl}: {url}")
-            print("\nUsage: dns_enum.py example.com -w tiny")
-
-    def _get_wordlist(self, wordlist_name):
-        """Get a wordlist by name or path"""
-        if wordlist_name in WORDLIST_PATHS:
-            # This is a predefined wordlist
-            url = WORDLIST_PATHS[wordlist_name]
-            message = f"Downloading wordlist '{wordlist_name}' from {url}"
-            if self.framework_mode:
-                self.logger.info(message)
-            else:
-                print(f"[*] {message}")
-                
-            try:
-                response = requests.get(url)
-                if response.status_code == 200:
-                    return response.text.splitlines()
-                else:
-                    error_msg = f"Error downloading wordlist: {response.status_code}"
-                    if self.framework_mode:
-                        self.logger.error(error_msg)
-                    else:
-                        print(f"[!] {error_msg}")
-                    return []
-            except Exception as e:
-                error_msg = f"Error downloading wordlist: {e}"
-                if self.framework_mode:
-                    self.logger.error(error_msg)
-                else:
-                    print(f"[!] {error_msg}")
-                return []
-        elif os.path.exists(wordlist_name):
-            # This is a file path
-            message = f"Reading wordlist from file: {wordlist_name}"
-            if self.framework_mode:
-                self.logger.info(message)
-            else:
-                print(f"[*] {message}")
-                
-            try:
-                with open(wordlist_name, 'r') as f:
-                    return [line.strip() for line in f if line.strip()]
-            except Exception as e:
-                error_msg = f"Error reading wordlist file: {e}"
-                if self.framework_mode:
-                    self.logger.error(error_msg)
-                else:
-                    print(f"[!] {error_msg}")
-                return []
-        else:
-            error_msg = f"Wordlist not found: {wordlist_name}"
-            if self.framework_mode:
-                self.logger.error(error_msg)
-            else:
-                print(f"[!] {error_msg}")
-            return []
-
-    def _bruteforce_subdomains(self):
-        """Bruteforce subdomains using wordlist"""
-        if not self.wordlist:
-            message = "No wordlist specified for bruteforce"
-            if self.framework_mode:
-                self.logger.warning(message)
-            else:
-                print(f"[!] {message}")
-            return
-        
-        subdomains = self._get_wordlist(self.wordlist)
-        if not subdomains:
-            message = "Wordlist is empty or could not be loaded"
-            if self.framework_mode:
-                self.logger.warning(message)
-            else:
-                print(f"[!] {message}")
-            return
-        
-        message = f"Starting bruteforce with {len(subdomains)} subdomains..."
-        if self.framework_mode:
-            self.logger.info(message)
-        else:
-            print(f"[*] {message}")
-            
-        # Set up progress tracking
-        found_count = 0
-        total_count = len(subdomains)
-        start_time = time.time()
-        
-        # Use rich progress bar if not in framework mode
-        if not self.framework_mode and total_count > 100:
-            with Progress() as progress:
-                task = progress.add_task("[cyan]Bruteforcing subdomains...", total=total_count)
-                
-                with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as executor:
-                    future_to_subdomain = {
-                        executor.submit(self._check_subdomain, sub): sub 
-                        for sub in subdomains
-                    }
-                    
-                    for i, future in enumerate(concurrent.futures.as_completed(future_to_subdomain)):
-                        subdomain = future_to_subdomain[future]
-                        try:
-                            result = future.result()
-                            if result:
-                                self.results["subdomains"].append(result)
-                                found_count += 1
-                                print(f"[+] Found subdomain: {result['name']}")
-                        except Exception as e:
-                            if self.verbose:
-                                print(f"[!] Error checking {subdomain}: {e}")
-                        
-                        # Update progress
-                        progress.update(task, completed=i+1)
-                        
-                        # Respect rate limiting if enabled
-                        if self.rate_limit > 0:
-                            time.sleep(1.0 / self.rate_limit)
-        else:
-            # Simpler execution for framework mode or smaller wordlists
-            with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as executor:
-                future_to_subdomain = {
-                    executor.submit(self._check_subdomain, sub): sub 
-                    for sub in subdomains
-                }
-                
-                for future in concurrent.futures.as_completed(future_to_subdomain):
-                    subdomain = future_to_subdomain[future]
-                    try:
-                        result = future.result()
-                        if result:
-                            self.results["subdomains"].append(result)
-                            found_count += 1
-                            
-                            message = f"Found subdomain: {result['name']}"
-                            if self.framework_mode:
-                                self.logger.info(message)
-                            else:
-                                print(f"[+] {message}")
-                    except Exception as e:
-                        if self.verbose:
-                            error_msg = f"Error checking {subdomain}: {e}"
-                            if self.framework_mode:
-                                self.logger.debug(error_msg)
-                            else:
-                                print(f"[!] {error_msg}")
-                    
-                    # Respect rate limiting if enabled
-                    if self.rate_limit > 0:
-                        time.sleep(1.0 / self.rate_limit)
-        
-        # Report completion statistics
-        end_time = time.time()
-        duration = end_time - start_time
-        completion_msg = f"Bruteforce completed: found {found_count} subdomains in {duration:.2f} seconds"
-        if self.framework_mode:
-            self.logger.info(completion_msg)
-        else:
-            print(f"[+] {completion_msg}")
-
-    def _check_subdomain(self, subdomain: str) -> Optional[Dict]:
-        """Check if a subdomain exists"""
-        fqdn = f"{subdomain}.{self.domain}"
-        try:
-            answers = dns.resolver.resolve(fqdn, 'A')
-            return {
-                "name": fqdn,
-                "type": "A",
-                "ips": [str(rdata) for rdata in answers],
-                "discovery_method": "bruteforce"
-            }
-        except dns.resolver.NXDOMAIN:
-            return None
-        except dns.resolver.NoAnswer:
-            return None
-        except Exception as e:
-            if self.verbose:
-                error_msg = f"Error resolving {fqdn}: {str(e)}"
-                if self.framework_mode:
-                    self.logger.debug(error_msg)
-            return None
-
-    def analyze_infrastructure(self):
-        """Analyze DNS infrastructure patterns"""
-        if self.framework_mode:
-            self.logger.info("Analyzing infrastructure...")
-        else:
-            print("[*] Analyzing infrastructure...")
-        
-        # Analyze IP ranges
-        ip_ranges = defaultdict(list)
-        for subdomain in self.results["subdomains"]:
-            for ip in subdomain.get("ips", []):
-                try:
-                    ip_obj = ipaddress.ip_address(ip)
-                    network = ipaddress.ip_network(f"{ip_obj}/24", strict=False)
-                    ip_ranges[str(network)].append(subdomain["name"])
-                except:
-                    continue
-        
-        # Add analysis to results
-        self.results["infrastructure"]["ip_ranges"] = [
-            {"network": network, "subdomains": subdomains}
-            for network, subdomains in ip_ranges.items()
-        ]
-
-    def reverse_lookup_ips(self):
-        """Perform reverse DNS lookups"""
-        if self.framework_mode:
-            self.logger.info("Performing reverse DNS lookups...")
-        else:
-            print("[*] Performing reverse DNS lookups...")
-        
-        unique_ips = set()
-        for subdomain in self.results["subdomains"]:
-            unique_ips.update(subdomain.get("ips", []))
-        
-        for ip in unique_ips:
-            try:
-                hostname = socket.gethostbyaddr(ip)[0]
-                self.results["infrastructure"]["ptr_records"].append({
-                    "ip": ip,
-                    "hostname": hostname
-                })
-                
-                message = f"Reverse DNS: {ip} -> {hostname}"
-                if self.framework_mode:
-                    self.logger.info(message)
-                else:
-                    print(f"[+] {message}")
-            except:
-                continue
-
-    def detect_cloud_providers(self):
-        """Detect cloud providers from DNS records and subdomains"""
-        if self.framework_mode:
-            self.logger.info("Detecting cloud providers...")
-        else:
-            print("[*] Detecting cloud providers...")
-        
-        # Initialize providers counters
-        provider_counts = defaultdict(int)
-        provider_evidence = defaultdict(list)
-        
-        # Check for cloud provider evidence in CNAME records
-        for subdomain in self.results["subdomains"]:
-            subdomain_name = subdomain["name"]
-            
-            # Check for CNAME records
-            try:
-                cname_records = dns.resolver.resolve(subdomain_name, 'CNAME')
-                for record in cname_records:
-                    cname_target = str(record.target).rstrip('.')
-                    
-                    # Check against cloud provider patterns
-                    for provider_name, provider_data in CLOUD_PROVIDERS.items():
-                        # Check domain patterns
-                        for domain_pattern in provider_data.get("domains", []):
-                            if domain_pattern in cname_target:
-                                provider_counts[provider_name] += 1
-                                provider_evidence[provider_name].append({
-                                    "type": "CNAME",
-                                    "subdomain": subdomain_name,
-                                    "target": cname_target,
-                                    "pattern_matched": domain_pattern
-                                })
-                                break
-                        
-                        # Check regex patterns
-                        for regex_pattern in provider_data.get("cnames", []):
-                            if re.search(regex_pattern, cname_target):
-                                provider_counts[provider_name] += 1
-                                provider_evidence[provider_name].append({
-                                    "type": "CNAME_REGEX",
-                                    "subdomain": subdomain_name,
-                                    "target": cname_target,
-                                    "pattern_matched": regex_pattern
-                                })
-                                break
-            except:
-                pass
-            
-            # Check IP addresses against cloud IP ranges
-            for ip in subdomain.get("ips", []):
-                try:
-                    ip_obj = ipaddress.ip_address(ip)
-                    
-                    for provider_name, provider_data in CLOUD_PROVIDERS.items():
-                        for cidr in provider_data.get("ip_prefixes", []):
-                            try:
-                                if ip_obj in ipaddress.ip_network(cidr):
-                                    provider_counts[provider_name] += 1
-                                    provider_evidence[provider_name].append({
-                                        "type": "IP_RANGE",
-                                        "subdomain": subdomain_name,
-                                        "ip": ip,
-                                        "cidr": cidr
-                                    })
-                                    break
-                            except:
-                                continue
-                except:
-                    continue
-        
-        # Analyze TXT records for additional evidence
-        try:
-            txt_records = self.results["records"].get("TXT", [])
-            for txt in txt_records:
-                txt_lower = txt.lower()
-                
-                # Check for specific cloud provider verification records
-                if "google-site-verification" in txt_lower:
-                    provider_counts["GCP"] += 1
-                    provider_evidence["GCP"].append({
-                        "type": "TXT",
-                        "record": txt,
-                        "evidence": "google-site-verification"
-                    })
-                
-                elif "ms=" in txt_lower or "microsoft-site-verification" in txt_lower:
-                    provider_counts["Azure"] += 1
-                    provider_evidence["Azure"].append({
-                        "type": "TXT",
-                        "record": txt,
-                        "evidence": "microsoft verification"
-                    })
-                
-                elif "amazon-site-verification" in txt_lower:
-                    provider_counts["AWS"] += 1
-                    provider_evidence["AWS"].append({
-                        "type": "TXT",
-                        "record": txt, 
-                        "evidence": "amazon verification"
-                    })
-                
-                elif "cloudflare-verify" in txt_lower:
-                    provider_counts["Cloudflare"] += 1
-                    provider_evidence["Cloudflare"].append({
-                        "type": "TXT",
-                        "record": txt,
-                        "evidence": "cloudflare verification"
-                    })
-        except:
-            pass
-        
-        # Store results
-        self.results["hosting_providers"]["summary"] = dict(provider_counts)
-        self.results["hosting_providers"]["details"] = dict(provider_evidence)
-        
-        # Log findings
-        if provider_counts:
-            message = f"Detected {len(provider_counts)} cloud providers: {', '.join(provider_counts.keys())}"
-            if self.framework_mode:
-                self.logger.info(message)
-            else:
-                print(f"[+] {message}")
-            
-            for provider, count in provider_counts.items():
-                details = f"Provider: {provider}, Evidence count: {count}"
-                if self.framework_mode:
-                    self.logger.info(details)
-                else:
-                    print(f"    - {details}")
-        else:
-            message = "No cloud providers detected"
-            if self.framework_mode:
-                self.logger.info(message)
-            else:
-                print(f"[*] {message}")
-                
-        return provider_counts
-
-    def _add_findings_to_result(self, result: ToolResult):
-        """Add findings to the tool result"""
+    def _process_results(self, result: ToolResult):
+        """Process results and add findings to the tool result"""
         # Add nameserver findings
         for ns in self.results["nameservers"]:
             result.add_finding(
@@ -1513,18 +895,202 @@ class DNSEnumerator(BaseTool):
                 risk_level="Info",
                 evidence=evidence_str
             )
+        
+        # Add raw results to metadata
+        result.metadata.update(self.results)
+
+    def _save_results(self, output_file: str, format: str):
+        """Save results to file in specified format"""
+        try:
+            output_path = Path(output_file)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            if format == 'json':
+                with open(output_path, 'w') as f:
+                    json.dump(self.results, f, indent=4)
+            elif format == 'csv':
+                self._save_csv(output_path)
+            elif format == 'html':
+                self._save_html(output_path)
+            elif format == 'txt':
+                self._save_txt(output_path)
+                
+            message = f"Results saved to {output_file}"
+            if self.framework_mode:
+                self.logger.info(message)
+            else:
+                print(f"[+] {message}")
+                
+        except Exception as e:
+            error_msg = f"Error saving results: {str(e)}"
+            if self.framework_mode:
+                self.logger.error(error_msg)
+            else:
+                print(f"[!] {error_msg}")
+
+    def _save_csv(self, output_path: Path):
+        """Save results in CSV format"""
+        with open(output_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Type', 'Name', 'Value'])
+            
+            # Write nameservers
+            for ns in self.results["nameservers"]:
+                writer.writerow(['Nameserver', ns['hostname'], ns['ip']])
+            
+            # Write DNS records
+            for record_type, records in self.results["records"].items():
+                for record in records:
+                    writer.writerow(['DNS Record', record_type, record])
+            
+            # Write subdomains
+            for subdomain in self.results["subdomains"]:
+                writer.writerow(['Subdomain', subdomain['name'], 
+                               ', '.join(subdomain.get('ips', []))])
+
+    def _save_html(self, output_path: Path):
+        """Save results in HTML format"""
+        template_str = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>DNS Enumeration Results - {{ domain }}</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                .section { margin: 20px 0; }
+                .finding { border-left: 5px solid #ddd; padding: 10px; margin: 10px 0; }
+                .Critical { border-left-color: #ff0000; }
+                .High { border-left-color: #ff6600; }
+                .Medium { border-left-color: #ffcc00; }
+                .Low { border-left-color: #00cc00; }
+                .Info { border-left-color: #0066cc; }
+            </style>
+        </head>
+        <body>
+            <h1>DNS Enumeration Results for {{ domain }}</h1>
+            <div class="section">
+                <h2>Nameservers</h2>
+                {% for ns in nameservers %}
+                <div class="finding Info">
+                    <h3>{{ ns.hostname }}</h3>
+                    <p>IP: {{ ns.ip }}</p>
+                </div>
+                {% endfor %}
+            </div>
+            
+            <div class="section">
+                <h2>DNS Records</h2>
+                {% for type, records in dns_records.items() %}
+                <h3>{{ type }} Records</h3>
+                <ul>
+                {% for record in records %}
+                    <li>{{ record }}</li>
+                {% endfor %}
+                </ul>
+                {% endfor %}
+            </div>
+            
+            <div class="section">
+                <h2>Subdomains</h2>
+                {% for subdomain in subdomains %}
+                <div class="finding Info">
+                    <h3>{{ subdomain.name }}</h3>
+                    <p>IPs: {{ subdomain.ips|join(', ') }}</p>
+                </div>
+                {% endfor %}
+            </div>
+            
+            {% if hosting_providers.summary %}
+            <div class="section">
+                <h2>Cloud Providers</h2>
+                {% for provider, count in hosting_providers.summary.items() %}
+                <div class="finding Info">
+                    <h3>{{ provider }}</h3>
+                    <p>Instances: {{ count }}</p>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </body>
+        </html>
+        """
+        
+        template = jinja2.Template(template_str)
+        html_content = template.render(
+            domain=self.domain,
+            nameservers=self.results["nameservers"],
+            dns_records=self.results["records"],
+            subdomains=self.results["subdomains"],
+            hosting_providers=self.results["hosting_providers"]
+        )
+        
+        with open(output_path, 'w') as f:
+            f.write(html_content)
+
+    def _save_txt(self, output_path: Path):
+        """Save results in text format"""
+        with open(output_path, 'w') as f:
+            f.write(f"DNS Enumeration Results for {self.domain}\n")
+            f.write("=" * 50 + "\n\n")
+            
+            # Write nameservers
+            f.write("Nameservers:\n")
+            f.write("-" * 20 + "\n")
+            for ns in self.results["nameservers"]:
+                f.write(f"{ns['hostname']} ({ns['ip']})\n")
+            f.write("\n")
+            
+            # Write DNS records
+            f.write("DNS Records:\n")
+            f.write("-" * 20 + "\n")
+            for record_type, records in self.results["records"].items():
+                f.write(f"\n{record_type} Records:\n")
+                for record in records:
+                    f.write(f"  {record}\n")
+            f.write("\n")
+            
+            # Write subdomains
+            f.write("Subdomains:\n")
+            f.write("-" * 20 + "\n")
+            for subdomain in self.results["subdomains"]:
+                f.write(f"{subdomain['name']}\n")
+                if 'ips' in subdomain:
+                    f.write(f"  IPs: {', '.join(subdomain['ips'])}\n")
+            f.write("\n")
+            
+            # Write cloud providers
+            if self.results["hosting_providers"]["summary"]:
+                f.write("Cloud Providers:\n")
+                f.write("-" * 20 + "\n")
+                for provider, count in self.results["hosting_providers"]["summary"].items():
+                    f.write(f"{provider}: {count} instances\n")
 
 def main():
-    tool = DNSEnumerator()
-    return tool.main()
-
-if __name__ == "__main__":
+    """Main entry point for the tool"""
     try:
-        main()
+        tool = DNSEnumerator()
+        parser = argparse.ArgumentParser(description=tool.description)
+        tool.setup_argparse(parser)
+        args = parser.parse_args()
+        
+        result = tool.run(args)
+        
+        if isinstance(result, ToolResult):
+            return {
+                'status': 'success' if result.success else 'error',
+                'findings': result.findings,
+                'risk_summary': result.risk_summary,
+                'metadata': result.metadata
+            }
+        return {'status': 'error', 'error': 'Invalid result type'}
+        
     except KeyboardInterrupt:
         print("\n[!] Operation interrupted by user")
-        sys.exit(1)
+        return {'status': 'error', 'error': 'Operation interrupted by user'}
     except Exception as e:
         print(f"\n[!] Error: {str(e)}")
-        sys.exit(1)
+        return {'status': 'error', 'error': str(e)}
+
+if __name__ == "__main__":
+    sys.exit(0 if main()['status'] == 'success' else 1)
         

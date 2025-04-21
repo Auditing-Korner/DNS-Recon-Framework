@@ -1,14 +1,14 @@
 # Core dependencies
 rich>=10.0.0
-dnspython>=2.1.0
-requests>=2.25.0
+dnspython>=2.4.2
+requests>=2.31.0
 pyyaml>=6.0
 jinja2>=3.0.0
 
 # Network tools
 scapy>=2.4.5
 ipaddress>=1.0.23
-cryptography>=36.0.0
+cryptography>=42.0.2
 pyopenssl>=21.0.0
 
 # Concurrency
@@ -57,4 +57,5 @@ markdown>=3.5.0
 #pysnmp>=4.4.12   # For SNMP operations
 
 # Added from the code block
-pyyaml>=6.0.1 
+pyyaml>=6.0.1
+python-dateutil>=2.8.2  # For timestamp handling 

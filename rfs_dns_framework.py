@@ -277,109 +277,424 @@ class RFSDNSFramework:
             <html>
             <head>
                 <title>RFS DNS Framework Report</title>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
                 <style>
-                    body { font-family: Arial, sans-serif; margin: 20px; }
-                    .header { background: #f5f5f5; padding: 20px; border-radius: 5px; }
-                    .section { margin: 20px 0; }
-                    .tool-result { border: 1px solid #ddd; padding: 15px; margin: 15px 0; border-radius: 5px; }
-                    .finding { border-left: 5px solid #ddd; padding: 10px; margin: 10px 0; }
-                    .Critical { border-left-color: #ff0000; }
-                    .High { border-left-color: #ff6600; }
-                    .Medium { border-left-color: #ffcc00; }
-                    .Low { border-left-color: #00cc00; }
-                    .Info { border-left-color: #0066cc; }
-                    .error { color: #ff0000; }
-                    .warning { color: #ff6600; }
-                    .success { color: #00cc00; }
-                    .chart { width: 600px; height: 400px; margin: 20px 0; }
+                    :root {
+                        --primary-color: #2c3e50;
+                        --secondary-color: #34495e;
+                        --success-color: #27ae60;
+                        --warning-color: #f39c12;
+                        --danger-color: #c0392b;
+                        --info-color: #3498db;
+                        --light-color: #ecf0f1;
+                        --dark-color: #2c3e50;
+                    }
+                    
+                    body { 
+                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                        margin: 0;
+                        padding: 0;
+                        background-color: #f5f6fa;
+                        color: var(--dark-color);
+                    }
+                    
+                    .container {
+                        max-width: 1200px;
+                        margin: 0 auto;
+                        padding: 20px;
+                    }
+                    
+                    .header {
+                        background: var(--primary-color);
+                        color: white;
+                        padding: 2rem;
+                        margin-bottom: 2rem;
+                        border-radius: 8px;
+                        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                    }
+                    
+                    .section {
+                        background: white;
+                        margin: 20px 0;
+                        padding: 20px;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                    }
+                    
+                    .tool-result {
+                        border: 1px solid #eee;
+                        padding: 20px;
+                        margin: 15px 0;
+                        border-radius: 8px;
+                        background: white;
+                        transition: all 0.3s ease;
+                    }
+                    
+                    .tool-result:hover {
+                        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                    }
+                    
+                    .finding {
+                        border-left: 5px solid #ddd;
+                        padding: 15px;
+                        margin: 10px 0;
+                        background: #fafafa;
+                        border-radius: 0 8px 8px 0;
+                    }
+                    
+                    .Critical {
+                        border-left-color: var(--danger-color);
+                        background: rgba(192, 57, 43, 0.05);
+                    }
+                    
+                    .High {
+                        border-left-color: #e74c3c;
+                        background: rgba(231, 76, 60, 0.05);
+                    }
+                    
+                    .Medium {
+                        border-left-color: var(--warning-color);
+                        background: rgba(243, 156, 18, 0.05);
+                    }
+                    
+                    .Low {
+                        border-left-color: var(--success-color);
+                        background: rgba(39, 174, 96, 0.05);
+                    }
+                    
+                    .Info {
+                        border-left-color: var(--info-color);
+                        background: rgba(52, 152, 219, 0.05);
+                    }
+                    
+                    .error { color: var(--danger-color); }
+                    .warning { color: var(--warning-color); }
+                    .success { color: var(--success-color); }
+                    
+                    .chart {
+                        width: 100%;
+                        height: 400px;
+                        margin: 20px 0;
+                        background: white;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                    }
+                    
+                    .stats-grid {
+                        display: grid;
+                        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                        gap: 20px;
+                        margin: 20px 0;
+                    }
+                    
+                    .stat-card {
+                        background: white;
+                        padding: 20px;
+                        border-radius: 8px;
+                        text-align: center;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                    }
+                    
+                    .stat-card h3 {
+                        margin: 0;
+                        color: var(--secondary-color);
+                    }
+                    
+                    .stat-card .value {
+                        font-size: 2em;
+                        font-weight: bold;
+                        margin: 10px 0;
+                    }
+                    
+                    .stat-card .label {
+                        color: #666;
+                        font-size: 0.9em;
+                    }
+                    
+                    .timeline {
+                        position: relative;
+                        margin: 20px 0;
+                        padding: 20px 0;
+                    }
+                    
+                    .timeline::before {
+                        content: '';
+                        position: absolute;
+                        left: 50%;
+                        width: 2px;
+                        height: 100%;
+                        background: #ddd;
+                    }
+                    
+                    .timeline-item {
+                        margin: 10px 0;
+                        padding: 10px;
+                        background: white;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                        position: relative;
+                    }
+                    
+                    .timeline-item::before {
+                        content: '';
+                        position: absolute;
+                        width: 12px;
+                        height: 12px;
+                        background: var(--primary-color);
+                        border-radius: 50%;
+                        left: -6px;
+                        top: 50%;
+                        transform: translateY(-50%);
+                    }
+                    
+                    pre {
+                        background: #f8f9fa;
+                        padding: 15px;
+                        border-radius: 4px;
+                        overflow-x: auto;
+                    }
+                    
+                    .tabs {
+                        display: flex;
+                        margin-bottom: 20px;
+                    }
+                    
+                    .tab {
+                        padding: 10px 20px;
+                        cursor: pointer;
+                        border: none;
+                        background: none;
+                        border-bottom: 2px solid transparent;
+                        color: #666;
+                    }
+                    
+                    .tab.active {
+                        border-bottom-color: var(--primary-color);
+                        color: var(--primary-color);
+                    }
+                    
+                    .tab-content {
+                        display: none;
+                    }
+                    
+                    .tab-content.active {
+                        display: block;
+                    }
+                    
+                    @media (max-width: 768px) {
+                        .container {
+                            padding: 10px;
+                        }
+                        
+                        .stats-grid {
+                            grid-template-columns: 1fr;
+                        }
+                        
+                        .timeline::before {
+                            left: 0;
+                        }
+                        
+                        .timeline-item {
+                            margin-left: 20px;
+                        }
+                    }
                 </style>
                 <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+                <script>
+                    function switchTab(evt, tabName) {
+                        var i, tabcontent, tablinks;
+                        tabcontent = document.getElementsByClassName("tab-content");
+                        for (i = 0; i < tabcontent.length; i++) {
+                            tabcontent[i].style.display = "none";
+                        }
+                        tablinks = document.getElementsByClassName("tab");
+                        for (i = 0; i < tablinks.length; i++) {
+                            tablinks[i].className = tablinks[i].className.replace(" active", "");
+                        }
+                        document.getElementById(tabName).style.display = "block";
+                        evt.currentTarget.className += " active";
+                    }
+                </script>
             </head>
             <body>
-                <div class="header">
-                    <h1>RFS DNS Framework Report</h1>
-                    <p>Generated: {{ workflow_results.timestamp }}</p>
-                    <p>Framework Version: {{ workflow_results.framework_version }}</p>
-                </div>
-                
-                <div class="section">
-                    <h2>Summary</h2>
-                    <ul>
-                        <li>Total Tools: {{ workflow_results.summary.total_tools }}</li>
-                        <li>Successful Tools: <span class="success">{{ workflow_results.summary.successful_tools }}</span></li>
-                        <li>Failed Tools: <span class="error">{{ workflow_results.summary.failed_tools }}</span></li>
-                        <li>Critical Findings: <span class="error">{{ workflow_results.summary.critical_findings }}</span></li>
-                    </ul>
-                </div>
-                
-                <div class="section">
-                    <h2>Risk Summary</h2>
-                    <div id="riskChart" class="chart"></div>
-                    <script>
-                        var data = [{
-                            values: [
-                                {{ workflow_results.summary.risk_summary.Critical }},
-                                {{ workflow_results.summary.risk_summary.High }},
-                                {{ workflow_results.summary.risk_summary.Medium }},
-                                {{ workflow_results.summary.risk_summary.Low }},
-                                {{ workflow_results.summary.risk_summary.Info }}
-                            ],
-                            labels: ['Critical', 'High', 'Medium', 'Low', 'Info'],
-                            type: 'pie',
-                            marker: {
-                                colors: ['#ff0000', '#ff6600', '#ffcc00', '#00cc00', '#0066cc']
-                            }
-                        }];
-                        var layout = {
-                            title: 'Risk Distribution',
-                            height: 400,
-                            width: 600
-                        };
-                        Plotly.newPlot('riskChart', data, layout);
-                    </script>
-                </div>
-                
-                <div class="section">
-                    <h2>Tool Results</h2>
-                    {% for tool_name, tool_result in workflow_results.tools.items() %}
-                    <div class="tool-result">
-                        <h3>{{ tool_name }}</h3>
-                        <p>Status: 
-                            {% if tool_result.success %}
-                            <span class="success">Success</span>
-                            {% else %}
-                            <span class="error">Failed</span>
-                            {% endif %}
-                        </p>
-                        {% if tool_result.findings %}
-                        <div class="findings">
-                            <h4>Findings</h4>
-                            {% for finding in tool_result.findings %}
-                            <div class="finding {{ finding.risk_level }}">
-                                <h5>{{ finding.title }}</h5>
-                                <p><strong>Risk Level:</strong> {{ finding.risk_level }}</p>
-                                <p>{{ finding.description }}</p>
-                                {% if finding.evidence %}
-                                <pre>{{ finding.evidence }}</pre>
-                                {% endif %}
-                            </div>
-                            {% endfor %}
-                        </div>
-                        {% endif %}
-                        
-                        {% if tool_result.errors %}
-                        <div class="errors">
-                            <h4>Errors</h4>
-                            {% for error in tool_result.errors %}
-                            <div class="error">
-                                <p>{{ error.message }}</p>
-                                <small>{{ error.timestamp }}</small>
-                            </div>
-                            {% endfor %}
-                        </div>
-                        {% endif %}
+                <div class="container">
+                    <div class="header">
+                        <h1>RFS DNS Framework Report</h1>
+                        <p>Domain: {{ workflow_results.domain }}</p>
+                        <p>Generated: {{ workflow_results.timestamp }}</p>
+                        <p>Framework Version: {{ workflow_results.framework_version }}</p>
                     </div>
-                    {% endfor %}
+                    
+                    <div class="section">
+                        <h2>Executive Summary</h2>
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <h3>Total Tools</h3>
+                                <div class="value">{{ workflow_results.summary.total_tools }}</div>
+                                <div class="label">Tools Executed</div>
+                            </div>
+                            <div class="stat-card">
+                                <h3>Success Rate</h3>
+                                <div class="value">{{ (workflow_results.summary.successful_tools / workflow_results.summary.total_tools * 100) | round(1) }}%</div>
+                                <div class="label">Tools Completed Successfully</div>
+                            </div>
+                            <div class="stat-card">
+                                <h3>Critical Findings</h3>
+                                <div class="value" style="color: {{ '#c0392b' if workflow_results.summary.critical_findings > 0 else '#27ae60' }}">
+                                    {{ workflow_results.summary.critical_findings }}
+                                </div>
+                                <div class="label">High Priority Issues</div>
+                            </div>
+                            <div class="stat-card">
+                                <h3>Total Findings</h3>
+                                <div class="value">{{ workflow_results.summary.risk_summary.values() | sum }}</div>
+                                <div class="label">Issues Identified</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="section">
+                        <h2>Risk Analysis</h2>
+                        <div class="tabs">
+                            <button class="tab active" onclick="switchTab(event, 'riskChart')">Chart View</button>
+                            <button class="tab" onclick="switchTab(event, 'riskTable')">Table View</button>
+                        </div>
+                        
+                        <div id="riskChart" class="tab-content active">
+                            <div class="chart"></div>
+                            <script>
+                                var data = [{
+                                    values: [
+                                        {{ workflow_results.summary.risk_summary.Critical }},
+                                        {{ workflow_results.summary.risk_summary.High }},
+                                        {{ workflow_results.summary.risk_summary.Medium }},
+                                        {{ workflow_results.summary.risk_summary.Low }},
+                                        {{ workflow_results.summary.risk_summary.Info }}
+                                    ],
+                                    labels: ['Critical', 'High', 'Medium', 'Low', 'Info'],
+                                    type: 'pie',
+                                    marker: {
+                                        colors: ['#c0392b', '#e74c3c', '#f39c12', '#27ae60', '#3498db']
+                                    }
+                                }];
+                                var layout = {
+                                    title: 'Risk Distribution',
+                                    height: 400,
+                                    margin: {t: 40, b: 40, l: 40, r: 40}
+                                };
+                                Plotly.newPlot('riskChart', data, layout);
+                            </script>
+                        </div>
+                        
+                        <div id="riskTable" class="tab-content" style="display:none;">
+                            <table style="width:100%; border-collapse: collapse; margin: 20px 0;">
+                                <thead>
+                                    <tr style="background: var(--primary-color); color: white;">
+                                        <th style="padding: 10px;">Risk Level</th>
+                                        <th style="padding: 10px;">Count</th>
+                                        <th style="padding: 10px;">Percentage</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for level, count in workflow_results.summary.risk_summary.items() %}
+                                    <tr style="border-bottom: 1px solid #eee;">
+                                        <td style="padding: 10px;">{{ level }}</td>
+                                        <td style="padding: 10px;">{{ count }}</td>
+                                        <td style="padding: 10px;">
+                                            {{ (count / workflow_results.summary.risk_summary.values() | sum * 100) | round(1) }}%
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <div class="section">
+                        <h2>Tool Results</h2>
+                        {% for tool_name, tool_result in workflow_results.tools.items() %}
+                        <div class="tool-result">
+                            <h3>{{ tool_name }}</h3>
+                            <p>Status: 
+                                {% if tool_result.success %}
+                                <span class="success">✓ Success</span>
+                                {% else %}
+                                <span class="error">✗ Failed</span>
+                                {% endif %}
+                                {% if tool_result.critical %}
+                                <span style="color: var(--danger-color); margin-left: 10px;">⚠ Critical Tool</span>
+                                {% endif %}
+                            </p>
+                            
+                            {% if tool_result.findings %}
+                            <div class="findings">
+                                <h4>Findings</h4>
+                                {% for finding in tool_result.findings %}
+                                <div class="finding {{ finding.risk_level }}">
+                                    <h5>{{ finding.title }}</h5>
+                                    <p><strong>Risk Level:</strong> {{ finding.risk_level }}</p>
+                                    <p>{{ finding.description }}</p>
+                                    {% if finding.evidence %}
+                                    <pre>{{ finding.evidence }}</pre>
+                                    {% endif %}
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                            
+                            {% if tool_result.errors %}
+                            <div class="errors">
+                                <h4>Errors</h4>
+                                {% for error in tool_result.errors %}
+                                <div class="error">
+                                    <p>{{ error.message }}</p>
+                                    <small>{{ error.timestamp }}</small>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                            
+                            {% if tool_result.output_file %}
+                            <p><small>Detailed results: <a href="{{ tool_result.output_file }}">View Report</a></small></p>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="section">
+                        <h2>Timeline</h2>
+                        <div class="timeline">
+                            <div class="timeline-item">
+                                <strong>Scan Started:</strong> {{ workflow_results.start_time }}
+                            </div>
+                            {% for tool_name, tool_result in workflow_results.tools.items() %}
+                            <div class="timeline-item">
+                                <strong>{{ tool_name }}:</strong> {{ tool_result.timestamp }}
+                                <span class="{{ 'success' if tool_result.success else 'error' }}">
+                                    {{ '✓' if tool_result.success else '✗' }}
+                                </span>
+                            </div>
+                            {% endfor %}
+                            <div class="timeline-item">
+                                <strong>Scan Completed:</strong> {{ workflow_results.end_time }}
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {% if workflow_results.summary.critical_findings > 0 or workflow_results.summary.failed_tools > 0 %}
+                    <div class="section" style="border-left: 5px solid var(--danger-color);">
+                        <h2>Recommendations</h2>
+                        <ul>
+                            {% if workflow_results.summary.critical_findings > 0 %}
+                            <li class="error">Address {{ workflow_results.summary.critical_findings }} critical security findings immediately</li>
+                            {% endif %}
+                            {% if workflow_results.summary.failed_tools > 0 %}
+                            <li class="warning">Investigate and resolve {{ workflow_results.summary.failed_tools }} tool failures</li>
+                            {% endif %}
+                        </ul>
+                    </div>
+                    {% endif %}
                 </div>
             </body>
             </html>
