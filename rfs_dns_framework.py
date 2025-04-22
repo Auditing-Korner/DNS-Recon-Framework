@@ -127,6 +127,48 @@ class RFSDNSFramework:
                 config = registry.get_tool_config(name)
                 
                 if module and config:
+                    # Define tool-specific argument handling
+                    def get_workflow_args(tool_name):
+                        def workflow_args(domain, output, **kwargs):
+                            base_args = [domain]
+                            
+                            # Add output argument
+                            if '--output' not in base_args:
+                                base_args.extend(['--output', output])
+                            
+                            # Add framework mode flag
+                            if '--framework-mode' not in base_args:
+                                base_args.append('--framework-mode')
+                            
+                            # Add tool-specific arguments based on tool name
+                            if tool_name == 'dns_enum':
+                                base_args.extend(['--all'])
+                            elif tool_name == 'find_server':
+                                base_args.extend(['--check-all'])
+                            elif tool_name == 'cloud_enum':
+                                base_args.extend(['--provider', 'all'])
+                            elif tool_name == 'tld_brute':
+                                base_args.extend(['--type', 'all'])
+                            elif tool_name == 'takeover':
+                                base_args.extend(['--check-all'])
+                            elif tool_name == 'seizure':
+                                base_args.extend(['--check-all'])
+                            elif tool_name == 'mobile_gw':
+                                base_args.extend(['--gateway-type', 'all'])
+                            elif tool_name == 'cache_poison':
+                                base_args.extend(['--comprehensive'])
+                            elif tool_name == 'ssl_scanner':
+                                base_args.extend(['--check-subdomains'])
+                            elif tool_name == 'dns_takeover':
+                                base_args.extend(['--analyze'])
+                            
+                            # Add any extra arguments
+                            if kwargs.get('extra_args'):
+                                base_args.extend(kwargs['extra_args'])
+                            
+                            return base_args
+                        return workflow_args
+
                     self.tools[name] = {
                         'module': module,
                         'description': config['description'],
@@ -134,12 +176,7 @@ class RFSDNSFramework:
                         'requires_root': config['requires_root'],
                         'order': config['order'],
                         'script': config['file'],
-                        'workflow_args': lambda domain, output, **kwargs: [
-                            domain,
-                            '--output', output,
-                            '--framework-mode',
-                            *(kwargs.get('extra_args', []))
-                        ]
+                        'workflow_args': get_workflow_args(name)
                     }
                     self.console.print(f"[green]Loaded {name}")
                 else:
@@ -645,9 +682,12 @@ class RFSDNSFramework:
         
         # Check for root privileges if needed
         has_privs, priv_type = check_privileges()
-        if not has_privs and not force:
-            self.console.print(f"[yellow]Warning: Running without {priv_type}")
-            self.console.print("[yellow]Some features may be limited. Use --force to attempt all operations")
+        if not has_privs:
+            if force:
+                self.console.print(f"[yellow]Warning: Running without {priv_type} (forced)")
+            else:
+                self.console.print(f"[yellow]Warning: Running without {priv_type}")
+                self.console.print("[yellow]Some features may be limited. Use --force to attempt all operations")
         
         # Get ordered tools from registry
         ordered_tools = registry.get_ordered_tools()
@@ -656,11 +696,16 @@ class RFSDNSFramework:
             total_steps = len(ordered_tools)
             task = progress.add_task("[cyan]Running workflow...", total=total_steps)
             
-            # Create thread pool for parallel execution
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            # Create thread pool for parallel execution where possible
+            with ThreadPoolExecutor(max_workers=3) as executor:
                 future_to_tool = {}
                 
                 for tool_name, tool_config in ordered_tools:
+                    # Skip tools requiring root if we don't have it and not forcing
+                    if tool_config.get('requires_root') and not has_privs and not force:
+                        self.console.print(f"[yellow]Skipping {tool_name} (requires {priv_type})")
+                        continue
+                    
                     step_output = os.path.join(output_dir, f"{tool_name}_results.json")
                     step_dir = os.path.join(output_dir, tool_name)
                     
@@ -672,86 +717,46 @@ class RFSDNSFramework:
                         
                         # Get tool-specific arguments
                         extra_args = []
+                        
+                        # Add nameserver if tool requires it
                         if tool_config.get('requires_nameserver'):
                             nameservers = self.detect_nameservers(domain)
-                            extra_args.extend(['--nameserver', nameservers[0]])
+                            if nameservers:
+                                extra_args.extend(['--nameserver', nameservers[0]])
                         
+                        # Get tool arguments
                         args = self.tools[tool_name]['workflow_args'](
                             domain=domain,
                             output=step_output,
                             extra_args=extra_args
                         )
                         
-                        # Submit tool execution to thread pool
-                        future = executor.submit(self.run_tool, tool_name, args, force)
-                        future_to_tool[future] = (tool_name, tool_config, step_output, step_dir)
+                        # Submit tool execution to thread pool if it's safe to run in parallel
+                        if not tool_config.get('requires_root') and not tool_config.get('sequential'):
+                            future = executor.submit(self.run_tool, tool_name, args, force)
+                            future_to_tool[future] = (tool_name, tool_config, step_output, step_dir)
+                        else:
+                            # Run sequentially for tools that require root or need to be run sequentially
+                            success = self.run_tool(tool_name, args, force)
+                            self._handle_tool_result(tool_name, tool_config, step_output, step_dir, success)
+                            progress.update(task, advance=1)
                         
                     except Exception as e:
                         error_msg = f"Error setting up {tool_name}: {str(e)}"
                         self.console.print(f"[red]{error_msg}")
-                        self.workflow_results['tools'][tool_name] = {
-                            'success': False,
-                            'error': str(e),
-                            'timestamp': datetime.now().isoformat(),
-                            'critical': tool_config.get('critical', False)
-                        }
-                        self.workflow_results['summary']['failed_tools'] += 1
-                        if tool_config.get('critical'):
-                            self.workflow_results['summary']['critical_findings'] += 1
+                        self._handle_tool_error(tool_name, tool_config, str(e))
+                        progress.update(task, advance=1)
                 
-                # Process completed tools
-                for future in concurrent.futures.as_completed(future_to_tool):
+                # Process completed parallel tools
+                for future in as_completed(future_to_tool):
                     tool_name, tool_config, step_output, step_dir = future_to_tool[future]
                     try:
                         success = future.result()
-                        
-                        # Store results
-                        tool_result = {
-                            'success': success,
-                            'output_file': step_output if success else None,
-                            'output_dir': step_dir,
-                            'timestamp': datetime.now().isoformat(),
-                            'critical': tool_config.get('critical', False)
-                        }
-                        
-                        # Load and merge tool-specific results if available
-                        if success and os.path.exists(step_output):
-                            try:
-                                with open(step_output) as f:
-                                    tool_data = json.load(f)
-                                    tool_result.update(tool_data)
-                                    
-                                    # Update risk summary
-                                    if 'risk_summary' in tool_data:
-                                        for level, count in tool_data['risk_summary'].items():
-                                            self.workflow_results['summary']['risk_summary'][level] = \
-                                                self.workflow_results['summary']['risk_summary'].get(level, 0) + count
-                            except:
-                                pass
-                        
-                        self.workflow_results['tools'][tool_name] = tool_result
-                        
-                        # Update summary
-                        self.workflow_results['summary']['total_tools'] += 1
-                        if success:
-                            self.workflow_results['summary']['successful_tools'] += 1
-                        else:
-                            self.workflow_results['summary']['failed_tools'] += 1
-                            if tool_config.get('critical'):
-                                self.workflow_results['summary']['critical_findings'] += 1
-                        
+                        self._handle_tool_result(tool_name, tool_config, step_output, step_dir, success)
                     except Exception as e:
                         error_msg = f"Error in {tool_name}: {str(e)}"
                         self.console.print(f"[red]{error_msg}")
-                        self.workflow_results['tools'][tool_name] = {
-                            'success': False,
-                            'error': str(e),
-                            'timestamp': datetime.now().isoformat(),
-                            'critical': tool_config.get('critical', False)
-                        }
-                        self.workflow_results['summary']['failed_tools'] += 1
-                        if tool_config.get('critical'):
-                            self.workflow_results['summary']['critical_findings'] += 1
+                        self._handle_tool_error(tool_name, tool_config, str(e))
                     
                     progress.update(task, advance=1)
         
@@ -774,6 +779,55 @@ class RFSDNSFramework:
         
         # Display final summary
         self.display_workflow_summary()
+
+    def _handle_tool_result(self, tool_name: str, tool_config: Dict[str, Any], 
+                          step_output: str, step_dir: str, success: bool) -> None:
+        """Handle the result of a tool execution"""
+        tool_result = {
+            'success': success,
+            'output_file': step_output if success else None,
+            'output_dir': step_dir,
+            'timestamp': datetime.now().isoformat(),
+            'critical': tool_config.get('critical', False)
+        }
+        
+        # Load and merge tool-specific results if available
+        if success and os.path.exists(step_output):
+            try:
+                with open(step_output) as f:
+                    tool_data = json.load(f)
+                    tool_result.update(tool_data)
+                    
+                    # Update risk summary
+                    if 'risk_summary' in tool_data:
+                        for level, count in tool_data['risk_summary'].items():
+                            self.workflow_results['summary']['risk_summary'][level] = \
+                                self.workflow_results['summary']['risk_summary'].get(level, 0) + count
+            except Exception as e:
+                self.console.print(f"[yellow]Warning: Could not load results for {tool_name}: {e}")
+        
+        self.workflow_results['tools'][tool_name] = tool_result
+        
+        # Update summary
+        self.workflow_results['summary']['total_tools'] += 1
+        if success:
+            self.workflow_results['summary']['successful_tools'] += 1
+        else:
+            self.workflow_results['summary']['failed_tools'] += 1
+            if tool_config.get('critical'):
+                self.workflow_results['summary']['critical_findings'] += 1
+
+    def _handle_tool_error(self, tool_name: str, tool_config: Dict[str, Any], error: str) -> None:
+        """Handle a tool execution error"""
+        self.workflow_results['tools'][tool_name] = {
+            'success': False,
+            'error': error,
+            'timestamp': datetime.now().isoformat(),
+            'critical': tool_config.get('critical', False)
+        }
+        self.workflow_results['summary']['failed_tools'] += 1
+        if tool_config.get('critical'):
+            self.workflow_results['summary']['critical_findings'] += 1
 
     def display_workflow_summary(self):
         """Display a comprehensive summary of the workflow results"""
