@@ -267,17 +267,25 @@ class RFSDNSFramework:
                 # Add any additional tool arguments
                 args.extend(tool_args)
                 
-                # Ensure HTML report generation
-                output_dir = None
-                for i, arg in enumerate(args):
-                    if arg == '--output':
-                        output_dir = os.path.dirname(args[i + 1])
-                        break
+                # Check if tool supports HTML reports before adding the argument
+                supports_html = False
+                if hasattr(module, 'supports_html_report'):
+                    supports_html = module.supports_html_report
+                elif hasattr(module, 'main') and '--html-report' in str(module.main.__doc__ or ''):
+                    supports_html = True
                 
-                if output_dir:
-                    html_report = os.path.join(output_dir, f"{tool_name}_report.html")
-                    if '--html-report' not in args:
-                        args.extend(['--html-report', html_report])
+                # Only add HTML report argument if tool supports it
+                if supports_html:
+                    output_dir = None
+                    for i, arg in enumerate(args):
+                        if arg == '--output':
+                            output_dir = os.path.dirname(args[i + 1])
+                            break
+                    
+                    if output_dir:
+                        html_report = os.path.join(output_dir, f"{tool_name}_report.html")
+                        if '--html-report' not in args:
+                            args.extend(['--html-report', html_report])
                 
                 # Set up sys.argv for the tool
                 sys.argv = args
