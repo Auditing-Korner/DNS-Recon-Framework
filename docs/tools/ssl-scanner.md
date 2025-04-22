@@ -1,278 +1,260 @@
-# SSL Scanner
+---
+title: SSL/TLS Security Scanner - RFS DNS Framework
+description: Comprehensive SSL/TLS security scanner for analyzing certificate configurations, protocol support, and security vulnerabilities. Features detailed reporting and compliance checking.
+keywords: SSL security, TLS testing, certificate validation, security scanner, vulnerability assessment, compliance testing
+author: RFS Team
+created: 2024
+updated: 2024
+---
 
-{: .no_toc }
-
-Comprehensive SSL/TLS security analysis tool.
-
-## Table of Contents
-{: .no_toc .text-delta }
-
-1. TOC
-{:toc}
+# SSL/TLS Security Scanner
 
 ## Overview
 
-The SSL Scanner is a specialized tool for analyzing SSL/TLS configurations, certificates, and security headers. It helps identify vulnerabilities, misconfigurations, and deviations from security best practices in HTTPS implementations.
+The SSL/TLS Security Scanner is a comprehensive security assessment tool designed to analyze SSL/TLS configurations, certificates, and potential vulnerabilities. It provides detailed insights into the security posture of SSL/TLS implementations and helps identify compliance issues.
 
-{: .warning }
-> This tool should be used responsibly as part of authorized security assessments. Some tests may trigger security alerts.
-
-## Features
-
-### Core Capabilities
-
-- Certificate validation
-- Protocol support detection
+**Key Features:**
+- Certificate chain validation
+- Protocol version testing
 - Cipher suite analysis
-- Security header verification
-- Known vulnerability testing
-- Configuration assessment
-- Detailed reporting
+- Known vulnerability detection
+- Compliance checking (PCI DSS, HIPAA, NIST)
+- Detailed security scoring
+
+## Quick Links
+- [Installation](#installation)
+- [Usage Examples](#usage-examples)
+- [Use Cases](#use-cases)
+- [Security Checks](#security-checks)
+- [Integration Guide](#integration)
+- [Troubleshooting](#troubleshooting)
+
+## Technical Details
 
 ### Security Checks
 
-- Certificate chain validation
-- Protocol version detection
-- Cipher strength analysis
-- Perfect Forward Secrecy
-- HSTS implementation
-- CAA record verification
-- Known vulnerability tests
+1. **Certificate Analysis**
+   - Validity period
+   - Chain of trust
+   - Key strength
+   - Signature algorithms
+   - Subject Alternative Names (SANs)
+
+2. **Protocol Security**
+   - TLS version support
+   - Insecure protocol detection
+   - Forward secrecy support
+   - Session resumption
+
+3. **Cipher Analysis**
+   - Supported cipher suites
+   - Weak cipher detection
+   - Perfect Forward Secrecy
+   - Key exchange methods
+
+4. **Vulnerability Testing**
+   - Heartbleed detection
+   - POODLE vulnerability
+   - ROBOT attack
+   - DROWN vulnerability
+   - Sweet32 testing
 
 ## Installation
 
 ```bash
-# Install from requirements
+# Install required dependencies
 pip install -r requirements.txt
 
 # Verify installation
-python rfs_dns_framework.py --tool ssl-scanner --help
+python rfs_dns_framework.py --tool ssl-scanner --version
 ```
 
-### Dependencies
-
+### Prerequisites
 - Python 3.7+
-- cryptography
-- pyOpenSSL
-- requests
-- sslyze
+- OpenSSL 1.1.1+
+- Network access to target systems
+- Required Python packages:
+  - cryptography
+  - pyOpenSSL
+  - requests
 
-## Usage
+## Usage Examples
 
-### Basic Usage
-
+### Basic Scan
 ```bash
-# Basic SSL scan
-python rfs_dns_framework.py --tool ssl-scanner \
-  --domain example.com
+python rfs_dns_framework.py --tool ssl-scanner --target example.com
+```
 
-# Comprehensive security scan
-python rfs_dns_framework.py --tool ssl-scanner \
-  --domain example.com \
-  --check-all
+### Comprehensive Analysis
+```bash
+python rfs_dns_framework.py --tool ssl-scanner --target example.com \
+    --mode comprehensive \
+    --check-all \
+    --output report.json
 ```
 
 ### Command Line Arguments
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `domain` | Target domain to scan | Required |
+| `--target` | Target hostname or IP | Required |
 | `--port` | Target port | 443 |
-| `--check-cert` | Validate certificate | True |
-| `--check-proto` | Check protocols | True |
-| `--check-ciphers` | Analyze ciphers | True |
-| `--check-vulns` | Test vulnerabilities | False |
-| `--check-all` | Run all checks | False |
+| `--mode` | Scan mode (basic/comprehensive) | basic |
+| `--check-all` | Enable all security checks | False |
 | `--timeout` | Connection timeout | 30 |
-| `--output` | Output file path | None |
-| `--format` | Output format (json/csv/text) | json |
+| `--output` | Report output file | None |
 
-### Advanced Usage
+## Use Cases
 
-#### Custom Port Scan
-```bash
-python rfs_dns_framework.py --tool ssl-scanner \
-  --domain example.com \
-  --port 8443 \
-  --check-all
-```
+### 1. Security Compliance
+- **Scenario**: PCI DSS compliance verification
+- **Approach**:
+  1. Run comprehensive scan
+  2. Check TLS version compliance
+  3. Verify cipher requirements
+  4. Generate compliance report
+- **Related Tools**:
+  - [Configuration Auditor](config_auditor.md)
+  - [Security Baseline](security-baseline.md)
 
-#### Vulnerability Focus
-```bash
-python rfs_dns_framework.py --tool ssl-scanner \
-  --domain example.com \
-  --check-vulns \
-  --include-known-vulns
-```
+### 2. Vulnerability Assessment
+- **Scenario**: Regular security testing
+- **Approach**:
+  1. Scan for known vulnerabilities
+  2. Test protocol security
+  3. Analyze cipher strength
+  4. Check certificate validity
+- **Related Tools**:
+  - [DNS Security Scanner](dns-security.md)
+  - [Security Analyzer](security-analyzer.md)
 
-## Output Examples
-
-### JSON Output
-```json
-{
-  "status": "success",
-  "tool_name": "ssl-scanner",
-  "findings": [
-    {
-      "category": "protocol",
-      "status": "warning",
-      "description": "TLS 1.0 supported",
-      "risk_level": "Medium",
-      "recommendation": "Disable TLS 1.0 support"
-    },
-    {
-      "category": "cipher",
-      "status": "fail",
-      "description": "Weak cipher (RC4) supported",
-      "risk_level": "High",
-      "recommendation": "Remove RC4 cipher support"
-    }
-  ]
-}
-```
-
-### Security Report
-```json
-{
-  "scan_summary": {
-    "hostname": "example.com",
-    "ip_address": "93.184.216.34",
-    "port": 443,
-    "scan_time": "2024-02-20T10:30:00Z",
-    "grade": "B"
-  },
-  "certificate": {
-    "subject": "CN=example.com",
-    "issuer": "C=US, O=Let's Encrypt, CN=R3",
-    "valid_from": "2024-01-01",
-    "valid_until": "2024-03-31",
-    "key_size": 2048,
-    "signature_algorithm": "sha256WithRSAEncryption"
-  },
-  "protocols": {
-    "ssl2": false,
-    "ssl3": false,
-    "tls1_0": true,
-    "tls1_1": true,
-    "tls1_2": true,
-    "tls1_3": true
-  }
-}
-```
-
-## Security Tests
-
-### Certificate Analysis
-- Chain validation
-- Hostname verification
-- Expiration checking
-- Key strength
-- Algorithm security
-- SAN validation
-
-### Protocol Testing
-- Version support
-- Configuration security
-- Downgrade protection
-- Renegotiation support
-
-### Cipher Analysis
-- Strength assessment
-- Forward secrecy
-- Key exchange methods
-- MAC algorithms
-
-### Vulnerability Checks
-- Heartbleed
-- POODLE
-- ROBOT
-- BEAST
-- CRIME
-- BREACH
-- Sweet32
+### 3. Certificate Management
+- **Scenario**: Certificate lifecycle monitoring
+- **Approach**:
+  1. Validate certificate chain
+  2. Check expiration dates
+  3. Verify key strength
+  4. Monitor SANs
+- **Related Tools**:
+  - [Certificate Manager](cert-manager.md)
+  - [PKI Validator](pki-validator.md)
 
 ## Integration
 
 ### Framework Integration
-```bash
-python rfs_dns_framework.py --workflow security-audit \
-  --domain example.com \
-  --output report.json
-```
-
-### Custom Integration
 ```python
-from tools.ssl_scanner import SSLScanner
+from rfs_dns_framework import SSLScanner
 
+# Initialize scanner
 scanner = SSLScanner()
-result = scanner.run(args)
-print(result.to_dict())
+
+# Run comprehensive scan
+results = scanner.scan("example.com", mode="comprehensive")
+
+# Process results
+if results.has_vulnerabilities:
+    print(f"Vulnerabilities found: {results.findings}")
 ```
+
+### Automation Integration
+```python
+from rfs_dns_framework import Framework
+
+# Setup framework
+framework = Framework()
+
+# Configure scan
+config = {
+    "target": "example.com",
+    "mode": "comprehensive",
+    "output": "ssl_report.json"
+}
+
+# Run scan
+framework.run_tool("ssl-scanner", **config)
+```
+
+## Security Checks
+
+### 1. Certificate Validation
+- Chain of trust verification
+- Expiration checking
+- Key strength analysis
+- Algorithm validation
+
+### 2. Protocol Security
+- TLS version detection
+- Insecure protocol alerts
+- Forward secrecy verification
+- Renegotiation testing
+
+### 3. Cipher Analysis
+- Supported suite enumeration
+- Weak cipher detection
+- Key exchange validation
+- Strength assessment
+
+### 4. Vulnerability Testing
+- Known vulnerability checks
+- Configuration analysis
+- Security control validation
+- Best practice compliance
 
 ## Best Practices
 
-### Configuration Guidelines
-1. **Protocol Support**
-   - Enable TLS 1.2 and 1.3
-   - Disable SSL 2.0 and 3.0
-   - Consider TLS 1.0/1.1 requirements
+### Testing Guidelines
+1. **Preparation**
+   - Obtain authorization
+   - Document scope
+   - Plan maintenance windows
+   - Backup configurations
 
-2. **Cipher Selection**
-   - Prefer strong ciphers
-   - Enable Perfect Forward Secrecy
-   - Remove weak algorithms
+2. **Execution**
+   - Start with basic scans
+   - Gradually increase intensity
+   - Monitor target systems
+   - Log all activities
 
-3. **Certificate Management**
-   - Regular rotation
-   - Strong key sizes
-   - Proper chain configuration
-
-## Security Considerations
-
-1. **Testing Impact**
-   - Monitor server load
-   - Test during low traffic
-   - Respect rate limits
-
-2. **Findings Handling**
-   - Secure sensitive data
-   - Follow disclosure policies
-   - Document all issues
+3. **Reporting**
+   - Document findings
+   - Prioritize issues
+   - Provide remediation steps
+   - Include evidence
 
 ## Troubleshooting
 
 ### Common Issues
 
 1. **Connection Errors**
-   ```bash
-   # Increase timeout
-   --timeout 60
-   ```
+   - Check network connectivity
+   - Verify port accessibility
+   - Review firewall rules
+   - Check SSL/TLS configuration
 
-2. **Certificate Chain**
-   ```bash
-   # Include intermediate certificates
-   --include-chain
-   ```
+2. **Certificate Issues**
+   - Verify chain of trust
+   - Check intermediate certificates
+   - Validate root certificates
+   - Review trust store
 
-### Error Messages
-
-| Error | Solution |
-|-------|----------|
-| "Connection refused" | Check firewall rules |
-| "Certificate error" | Verify trust chain |
-| "Timeout" | Increase timeout value |
+3. **Performance Problems**
+   - Adjust timeout settings
+   - Reduce concurrent checks
+   - Monitor resource usage
+   - Check network latency
 
 ## References
 
-1. [SSL/TLS Best Practices](https://www.ssllabs.com/downloads/SSL_TLS_Deployment_Best_Practices.pdf)
-2. [NIST SP 800-52](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-52r2.pdf)
+1. [NIST SP 800-52 Rev. 2](https://csrc.nist.gov/publications/detail/sp/800-52/rev-2/final)
+2. [SSL Labs Best Practices](https://github.com/ssllabs/research/wiki/SSL-and-TLS-Deployment-Best-Practices)
 3. [Mozilla SSL Configuration Generator](https://ssl-config.mozilla.org/)
 
-## Contributing
+## Related Documentation
+- [Framework Architecture](../architecture.md)
+- [Security Best Practices](../security/best-practices.md)
+- [Tool Development Guide](../development/tools.md)
 
-We welcome contributions! Please see our [Contributing Guidelines](../contributing.md) for details on:
-- Adding new checks
-- Improving analysis
-- Adding vulnerability tests
-- Enhancing documentation 
+---
+
+*Last updated: 2024*
+*Tags: SSL security, TLS testing, certificate validation, security assessment, compliance testing* 
