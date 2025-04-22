@@ -779,58 +779,58 @@ class DNSEnumerator(BaseTool):
                 metadata={}
             )
             
-            # Store arguments
-            self.args = args
-            self.domain = args.domain.lower()
-            self.timeout = args.timeout
-            self.threads = args.threads
-            self.output = args.output
-            self.format = args.output_format
-            self.verbose = args.verbose
-            self.max_depth = args.depth
-            self.rate_limit = args.rate_limit
-            self.resolve_ips = args.resolve_ips
-            self.check_wildcard = not args.no_wildcard_check
-            self.resume = args.resume
-            self.detect_providers = not args.no_provider_detection
-            self.wordlist = args.wordlist if hasattr(args, 'wordlist') else None
-            
-            # Configure resolver with updated timeout
-            self.resolver.timeout = self.timeout
-            self.resolver.lifetime = self.timeout
-            
-            # Update metadata
+        # Store arguments
+        self.args = args
+        self.domain = args.domain.lower()
+        self.timeout = args.timeout
+        self.threads = args.threads
+        self.output = args.output
+        self.format = args.output_format
+        self.verbose = args.verbose
+        self.max_depth = args.depth
+        self.rate_limit = args.rate_limit
+        self.resolve_ips = args.resolve_ips
+        self.check_wildcard = not args.no_wildcard_check
+        self.resume = args.resume
+        self.detect_providers = not args.no_provider_detection
+        self.wordlist = args.wordlist if hasattr(args, 'wordlist') else None
+        
+        # Configure resolver with updated timeout
+        self.resolver.timeout = self.timeout
+        self.resolver.lifetime = self.timeout
+        
+        # Update metadata
             self.results["metadata"].update({
                 "domain": self.domain,
                 "scan_time": datetime.now().isoformat(),
                 "arguments": {
-                    "timeout": self.timeout,
-                    "threads": self.threads,
-                    "resolve_ips": self.resolve_ips,
-                    "check_wildcard": self.check_wildcard,
-                    "detect_providers": self.detect_providers,
-                    "max_depth": self.max_depth
-                }
+            "timeout": self.timeout,
+            "threads": self.threads,
+            "resolve_ips": self.resolve_ips,
+            "check_wildcard": self.check_wildcard,
+            "detect_providers": self.detect_providers,
+            "max_depth": self.max_depth
+        }
             })
-            
-            # If listing wordlists was requested
-            if hasattr(args, 'list') and args.list:
-                self._list_wordlists()
+        
+        # If listing wordlists was requested
+        if hasattr(args, 'list') and args.list:
+            self._list_wordlists()
                 result.metadata["action"] = "list_wordlists"
-                return result
-            
-            # Run enumeration
-            self.run_enumeration()
-            
+            return result
+        
+        # Run enumeration
+        self.run_enumeration()
+        
             # Process results and add findings
             self._process_results(result)
             
             # Save results if output file specified
             if self.output:
                 self._save_results(self.output, self.format)
-            
-            return result
-            
+        
+        return result
+                
         except Exception as e:
             error_msg = f"Error during DNS enumeration: {str(e)}"
             if self.framework_mode:
@@ -839,9 +839,9 @@ class DNSEnumerator(BaseTool):
                     self.logger.debug(traceback.format_exc())
             else:
                 print(f"[!] {error_msg}")
-                if self.verbose:
+            if self.verbose:
                     print(traceback.format_exc())
-            
+
             result.success = False
             result.add_error(error_msg)
             return result
@@ -1068,7 +1068,7 @@ class DNSEnumerator(BaseTool):
 def main():
     """Main entry point for the tool"""
     try:
-        tool = DNSEnumerator()
+    tool = DNSEnumerator()
         parser = argparse.ArgumentParser(description=tool.description)
         tool.setup_argparse(parser)
         args = parser.parse_args()
