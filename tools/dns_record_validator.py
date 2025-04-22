@@ -26,7 +26,6 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 from pathlib import Path
-from tools.base_tool import BaseTool, ToolResult
 
 try:
     from .base_tool import BaseTool, ToolResult
@@ -92,6 +91,11 @@ class DNSRecordValidator(BaseTool):
                           help='Run all validation checks')
         parser.add_argument('--timeout', type=int, default=5,
                           help='Timeout for DNS queries in seconds')
+        
+        # Add framework integration arguments
+        parser.add_argument('--output', help='Output file path for results')
+        parser.add_argument('--framework-mode', action='store_true',
+                          help='Run in framework integration mode')
 
     def run(self, args: argparse.Namespace) -> ToolResult:
         """Run the validation checks"""
@@ -99,7 +103,11 @@ class DNSRecordValidator(BaseTool):
             success=True,
             tool_name=self.name,
             findings=[],
-            metadata={"domain": args.domain}
+            metadata={
+                "domain": args.domain,
+                "framework_mode": args.framework_mode if hasattr(args, 'framework_mode') else False,
+                "timestamp": datetime.now().isoformat()
+            }
         )
         
         try:
@@ -128,6 +136,18 @@ class DNSRecordValidator(BaseTool):
             
             # Always run basic record validations
             self._validate_basic_records(result)
+            
+            # Handle output file if specified
+            if hasattr(args, 'output') and args.output:
+                try:
+                    output_dir = os.path.dirname(args.output)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    
+                    with open(args.output, 'w') as f:
+                        json.dump(result.to_dict(), f, indent=2)
+                except Exception as e:
+                    result.add_error(f"Error writing output file: {str(e)}")
             
             return result
             
