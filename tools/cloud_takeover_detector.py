@@ -1,1742 +1,426 @@
 #!/usr/bin/env python3
 """
-Cloud Provider Subdomain Takeover Detector
-This script focuses on detecting potential subdomain takeover vulnerabilities
-specifically for cloud service providers.
+Cloud Takeover Detector
+
+Detects potential cloud service takeover vulnerabilities:
+- Dangling DNS records
+- Unclaimed cloud resources
+- Misconfigured cloud services
+- Provider-specific checks
 """
 
 import argparse
-import concurrent.futures
-import dns.resolver
 import json
-import os
-import re
-import requests
-import urllib3
+import logging
 import sys
+import os
+from datetime import datetime
+from typing import Dict, List, Optional
 from pathlib import Path
-from typing import Dict, List, Optional, Union, Set, Tuple
 from dataclasses import dataclass
-from colorama import Fore, Style, init
-from functools import lru_cache
-import time
+from concurrent.futures import ThreadPoolExecutor
 
 try:
-    from .base_tool import BaseTool, ToolResult
+    from .framework_tool_template import FrameworkTool, ToolResult
 except ImportError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tools.base_tool import BaseTool, ToolResult
+    from tools.framework_tool_template import FrameworkTool, ToolResult
 
-# Disable SSL warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Check dependencies
+MISSING_DEPS = []
+try:
+    import dns.resolver
+except ImportError:
+    MISSING_DEPS.append("dnspython")
 
-# Initialize colorama
-init()
+try:
+    import requests
+except ImportError:
+    MISSING_DEPS.append("requests")
+
+try:
+    import boto3
+except ImportError:
+    MISSING_DEPS.append("boto3")
+
+try:
+    from azure.mgmt.dns import DnsManagementClient
+except ImportError:
+    MISSING_DEPS.append("azure-mgmt-dns")
+
+try:
+    from google.cloud import dns
+except ImportError:
+    MISSING_DEPS.append("google-cloud-dns")
 
 @dataclass
-class TakeoverResult:
-    subdomain: str
-    provider: str
-    cname: str
-    vulnerability_type: str
-    evidence: str
-    status_code: int
+class CloudTakeoverResult:
+    """Container for cloud takeover scan results"""
+    domain: str
+    provider: Optional[str]
     is_vulnerable: bool
-    risk_level: str = "Medium"  # Added risk level field
+    evidence: List[str]
+    risk_level: str
+    details: Dict
+    errors: List[str]
 
-class CloudTakeoverDetector(BaseTool):
+class CloudTakeoverDetector(FrameworkTool):
+    """Cloud Service Takeover Detection Tool"""
+    
     def __init__(self):
         super().__init__(
-            name="cloud_takeover",
-            description="Cloud Provider Subdomain Takeover Detector"
+            name="cloud-takeover-detector",
+            description="Cloud Service Takeover Detection Tool"
         )
-        self.domain = None
-        self.threads = 10
-        self.timeout = 5
-        self.selected_providers = None
-        self.results = []
-        self.errors = []
-        self.resolver = dns.resolver.Resolver()
-        self.dns_cache = {}
         
-        # Load provider signatures for detection
-        self.signatures = self._load_provider_signatures()
-        self.providers = self.list_available_providers()
-        self.provider_patterns = self._build_provider_patterns()
-        self.provider_tlds = self._build_provider_tld_map()
-        self.provider_keywords = self._build_provider_keyword_map()
-
-    def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
-        """Set up argument parsing for the tool"""
-        super().setup_argparse(parser)
-        parser.add_argument("domain", help="Target domain to scan")
-        parser.add_argument("-s", "--subdomains", help="File containing list of subdomains")
-        parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads")
-        parser.add_argument("--timeout", type=int, default=5, help="Timeout for requests")
-        parser.add_argument("--risk-level", choices=["all", "high", "medium", "low"],
-                          default="all", help="Filter results by risk level")
-        parser.add_argument("-p", "--providers", nargs="+", help="Specific cloud providers to test (space-separated names)")
-        parser.add_argument("--list-providers", action="store_true", help="List available cloud providers and exit")
-
-    def run(self, args: argparse.Namespace) -> ToolResult:
-        """Run the tool with the given arguments"""
-        tool_result = ToolResult(
-            success=True,
-            tool_name=self.name,
-            findings=[],
-            metadata={"domain": args.domain}
-        )
-
-        try:
-            # Initialize tool settings
-            self.domain = args.domain
-            self.threads = args.threads
-            self.timeout = args.timeout
-            self.selected_providers = args.providers
-            self.resolver.timeout = args.timeout
-            self.resolver.lifetime = args.timeout
-
-            # List providers if requested
-            if args.list_providers:
-                providers = self.list_available_providers()
-                tool_result.add_finding(
-                    "Available Cloud Providers",
-                    "\n".join(providers),
-                    "info",
-                    "List of supported cloud providers"
-                )
-                return tool_result
-
-            # Get subdomains to scan
-            subdomains = []
-            if args.subdomains:
-                try:
-                    with open(args.subdomains, 'r') as f:
-                        subdomains = [line.strip() for line in f if line.strip()]
-                except Exception as e:
-                    tool_result.add_error(f"Error reading subdomain file: {str(e)}")
-                    return tool_result
-            else:
-                subdomains = [args.domain]
-
-            # Run the scan
-            results = self.scan_subdomains(subdomains)
-
-            # Filter results by risk level if specified
-            if args.risk_level != "all":
-                results = [r for r in results if r.risk_level.lower() == args.risk_level.lower()]
-
-            # Add findings to tool result
-            for result in results:
-                tool_result.add_finding(
-                    title=f"Potential takeover: {result.subdomain}",
-                    description=f"Provider: {result.provider}\nType: {result.vulnerability_type}\nCNAME: {result.cname}",
-                    risk_level=result.risk_level,
-                    evidence=result.evidence
-                )
-
-            return tool_result
-
-        except Exception as e:
-            tool_result.success = False
-            tool_result.add_error(f"Error during scan: {str(e)}")
-            return tool_result
-
-    def _load_provider_signatures(self) -> Dict:
-        """Load cloud provider signatures from providers.json"""
-        try:
-            script_dir = Path(__file__).parent
-            with open(script_dir / 'providers.json', 'r') as f:
-                data = json.load(f)
-                return data.get('cloud_providers', [])
-        except Exception as e:
-            print(f"{Fore.RED}[!] Error loading provider signatures: {e}")
-            return []
-
-    def list_available_providers(self) -> List[str]:
-        """Return a list of available cloud provider names"""
-        return [provider['name'] for provider in self._load_provider_signatures()]
-
-    def _build_takeover_signatures(self) -> Dict[str, Dict]:
-        """Build takeover signatures from provider data"""
-        signatures = {}
-        
-        # Common takeover response patterns
-        common_patterns = {
-            "404_page": [
-                "404 - Not Found",
-                "404 Not Found",
-                "Page Not Found",
-                "Error 404",
-                "This page does not exist",
-                "The requested page could not be found",
-                "Resource not available",
-                "Service not available in your region",
-                "Page does not exist",
-                "Content not found",
-                "Site not accessible",
-                "Resource unavailable",
-                "Invalid URL",
-                "Page no longer exists",
-                "Content has been removed",
-                "Page has been deleted",
-                "Resource has been moved",
-                "Invalid request",
-                "Cannot find requested page",
-                "URL not found on server",
-                "Page missing",
-                "Content missing",
-                "Resource missing",
-                "Invalid path",
-                "Dead link",
-                "Broken link",
-                "Page offline",
-                "Site offline",
-                "Resource offline"
-            ],
-            "no_such_service": [
-                "NoSuchBucket",
-                "No Such Account",
-                "No Such Service",
-                "Service Not Found",
-                "This service is not available",
-                "Service Unavailable",
-                "This service has been discontinued",
-                "Service not configured",
-                "Resource does not exist",
-                "Account suspended",
-                "Service not initialized",
-                "Resource not provisioned",
-                "Service not activated",
-                "Account not found",
-                "Service disabled",
-                "Resource deactivated",
-                "Service terminated",
-                "Account terminated",
-                "Service expired",
-                "Resource expired",
-                "Service deleted",
-                "Account deleted",
-                "Service removed",
-                "Resource removed",
-                "Service cancelled",
-                "Account cancelled",
-                "Service blocked",
-                "Account blocked",
-                "Service restricted",
-                "Account restricted",
-                "Service invalid",
-                "Account invalid",
-                "Service misconfigured",
-                "Account misconfigured",
-                "Service error",
-                "Account error"
-            ],
-            "unclaimed": [
-                "not been claimed",
-                "has not been registered",
-                "is not configured",
-                "has not been assigned",
-                "is not active",
-                "not been setup",
-                "pending setup",
-                "domain not active",
-                "resource not found",
-                "service not initialized",
-                "pending activation",
-                "requires configuration",
-                "awaiting setup",
-                "not yet configured",
-                "setup incomplete",
-                "configuration required",
-                "registration pending",
-                "activation needed",
-                "setup required",
-                "domain inactive",
-                "resource inactive",
-                "service inactive",
-                "account inactive",
-                "pending registration",
-                "awaiting activation",
-                "needs configuration",
-                "requires setup",
-                "domain unclaimed",
-                "resource unclaimed",
-                "service unclaimed",
-                "account unclaimed",
-                "not yet activated",
-                "not yet registered",
-                "not yet initialized",
-                "initialization pending",
-                "setup pending",
-                "configuration pending",
-                "registration incomplete",
-                "activation incomplete",
-                "setup incomplete"
-            ],
-            "government": [
-                "government service unavailable",
-                "official service not found",
-                "agency not found",
-                "department unavailable",
-                "government resource not found",
-                "official page not available",
-                "federal service not configured",
-                "government domain not active",
-                "agency website unavailable",
-                "official resource pending",
-                "department service inactive",
-                "government portal not found",
-                "public service error",
-                "government gateway timeout",
-                "official system maintenance",
-                "agency portal restricted",
-                "government cloud error",
-                "public sector service unavailable",
-                "state service not configured",
-                "national portal maintenance",
-                "government site offline",
-                "agency resource error",
-                "federal portal down",
-                "government service error",
-                "official website maintenance",
-                "department portal unavailable",
-                "government system error",
-                "public agency offline",
-                "state resource unavailable",
-                "federal website error",
-                "government access denied",
-                "agency system offline",
-                "official portal error",
-                "department website down",
-                "government resource error",
-                "public service offline",
-                "state agency error",
-                "federal resource down",
-                "government website maintenance",
-                "official system error"
-            ],
-            "military": [
-                "military service unavailable",
-                "defense resource not found",
-                "military domain inactive",
-                "defense portal not configured",
-                "military site pending setup",
-                "defense service unavailable",
-                "military resource not active",
-                "defense website not found",
-                "military cloud not configured",
-                "defense platform unavailable",
-                "military application error",
-                "defense system offline",
-                "military portal maintenance",
-                "defense cloud error",
-                "military service restricted",
-                "classified content unavailable",
-                "secure portal error",
-                "restricted access error",
-                "military gateway timeout",
-                "defense network error",
-                "military site offline",
-                "defense resource error",
-                "military portal down",
-                "defense service error",
-                "military website maintenance",
-                "defense portal unavailable",
-                "military system error",
-                "secure access denied",
-                "classified resource unavailable",
-                "military network down",
-                "defense system maintenance",
-                "military cloud error",
-                "secure gateway timeout",
-                "restricted portal offline",
-                "military resource error",
-                "defense website maintenance",
-                "secure service unavailable",
-                "classified system error",
-                "military access restricted",
-                "defense cloud maintenance"
-            ],
-            "isp": [
-                "business service not configured",
-                "enterprise portal unavailable",
-                "business domain not active",
-                "service provider resource not found",
-                "enterprise service pending",
-                "business portal not setup",
-                "provider domain inactive",
-                "enterprise resource unavailable",
-                "business service offline",
-                "enterprise portal error",
-                "business resource down",
-                "service provider error",
-                "enterprise system maintenance",
-                "business website unavailable",
-                "provider service inactive",
-                "enterprise cloud error",
-                "business platform down",
-                "service provider offline",
-                "enterprise network error",
-                "business portal maintenance",
-                "provider resource unavailable",
-                "enterprise service error",
-                "business system offline",
-                "service provider maintenance",
-                "enterprise website down",
-                "business cloud error",
-                "provider platform unavailable",
-                "enterprise resource error",
-                "business network maintenance",
-                "service provider restricted"
-            ]
+        # Cloud providers to check
+        self.providers = {
+            "aws": {
+                "services": ["s3", "cloudfront", "elasticbeanstalk", "route53"],
+                "patterns": {
+                    "s3": r"\.s3\.amazonaws\.com$",
+                    "cloudfront": r"\.cloudfront\.net$",
+                    "elasticbeanstalk": r"\.elasticbeanstalk\.com$"
+                }
+            },
+            "azure": {
+                "services": ["blob", "webapp", "trafficmanager"],
+                "patterns": {
+                    "blob": r"\.blob\.core\.windows\.net$",
+                    "webapp": r"\.azurewebsites\.net$",
+                    "trafficmanager": r"\.trafficmanager\.net$"
+                }
+            },
+            "gcp": {
+                "services": ["storage", "appengine", "compute"],
+                "patterns": {
+                    "storage": r"\.storage\.googleapis\.com$",
+                    "appengine": r"\.appspot\.com$",
+                    "compute": r"\.googleapis\.com$"
+                }
+            }
         }
         
-        for provider in self.providers:
-            name = provider['name']
-            signatures[name] = {
-                "cname_patterns": [re.escape(domain) for domain in provider.get('dns_domains', [])],
-                "signatures": common_patterns["404_page"] + 
-                            common_patterns["no_such_service"] + 
-                            common_patterns["unclaimed"],
-                "risk_level": "Medium"  # Default risk level
-            }
-            
-            # Add provider-specific signatures
-            if name == "Amazon Web Services (AWS)":
-                signatures[name]["signatures"].extend([
-                    "The specified bucket does not exist",
-                    "NoSuchBucket",
-                    "NoSuchKey",
-                    "InvalidBucketName",
-                    "The specified key does not exist",
-                    "The AWS Access Key Id you provided does not exist",
-                    "Repository not found",
-                    "Error finding repository",
-                    "Failed to process your request",
-                    "This bucket does not exist",
-                    "The bucket you are attempting to access must be addressed using the specified endpoint",
-                    "The bucket you are attempting to access is not configured",
-                    "This distribution does not exist",
-                    "CloudFront resource not found",
-                    "Invalid distribution configuration",
-                    "The Lambda function is not available",
-                    "API Gateway endpoint not found",
-                    "The API you are trying to access does not exist",
-                    "The specified API does not exist",
-                    "The specified stage does not exist",
-                    "Invalid API configuration",
-                    "The specified AWS Elastic Beanstalk environment does not exist",
-                    "The specified AWS Amplify app does not exist",
-                    "The specified AWS AppRunner service does not exist"
-                ])
-                signatures[name]["risk_level"] = "High"
-            
-            elif name == "Microsoft Azure":
-                signatures[name]["signatures"].extend([
-                    "404 Web Site not found",
-                    "This web app has been stopped",
-                    "This Azure Function App is not available",
-                    "This Azure Static Web App has not been configured",
-                    "This Azure Container App is not available",
-                    "This AKS cluster is not accessible",
-                    "This storage account is not accessible",
-                    "The specified Azure service does not exist",
-                    "The Azure resource you are looking for does not exist",
-                    "The specified Azure Function does not exist",
-                    "The Azure Static Web App has not been deployed",
-                    "The specified Azure Container Instance does not exist",
-                    "The Azure Kubernetes Service cluster is not found",
-                    "The specified Azure Storage Account does not exist",
-                    "The Azure App Service plan does not exist",
-                    "The specified Azure Logic App does not exist",
-                    "The Azure API Management service is not found",
-                    "The specified Azure CDN endpoint does not exist",
-                    "The Azure Front Door service is not configured",
-                    "The specified Azure Application Gateway does not exist"
-                ])
-                signatures[name]["risk_level"] = "High"
-            
-            elif name == "Google Cloud Platform (GCP)":
-                signatures[name]["signatures"].extend([
-                    "Error 404 (Not Found)",
-                    "The requested URL was not found",
-                    "App has not been used in a long time",
-                    "Project not found",
-                    "Error 404: Not Found",
-                    "The requested entity was not found",
-                    "Could not find backend",
-                    "Backend not found",
-                    "Resource not found in the API",
-                    "The specified Google Cloud Storage bucket does not exist",
-                    "The specified Cloud Run service does not exist",
-                    "The specified Cloud Function does not exist",
-                    "The App Engine application does not exist",
-                    "The specified GKE cluster does not exist",
-                    "The Cloud CDN configuration is not found",
-                    "The specified Load Balancer does not exist",
-                    "The Cloud Build trigger does not exist",
-                    "The specified Compute Engine instance does not exist",
-                    "The Cloud SQL instance does not exist",
-                    "The specified service account does not exist"
-                ])
-                signatures[name]["risk_level"] = "High"
-            
-            elif name == "GitHub Pages":
-                signatures[name]["signatures"].extend([
-                    "There isn't a GitHub Pages site here",
-                    "For root URLs (like http://example.com/) you must provide an index.html file",
-                    "Repository not found",
-                    "404 File not found",
-                    "Site not found",
-                    "Page not found",
-                    "Cannot serve this repository"
-                ])
-                signatures[name]["risk_level"] = "Medium"
-            
-            elif name == "Heroku":
-                signatures[name]["signatures"].extend([
-                    "herokucdn.com/error-pages/no-such-app.html",
-                    "No such app",
-                    "Nothing to see here",
-                    "Building a brand new app",
-                    "Application Error",
-                    "no-such-app",
-                    "The app you were looking for does not exist",
-                    "Heroku | No such app",
-                    "There's nothing here, yet",
-                    "The specified application does not exist",
-                    "The application you are looking for does not exist",
-                    "This Heroku application is not available",
-                    "The specified dyno type does not exist",
-                    "The specified add-on does not exist",
-                    "The specified pipeline does not exist",
-                    "The specified review app does not exist",
-                    "The specified team does not exist",
-                    "The specified buildpack does not exist",
-                    "The specified formation does not exist",
-                    "Application not found in this space"
-                ])
-                signatures[name]["risk_level"] = "High"
-            
-            elif name == "Vercel":
-                signatures[name]["signatures"].extend([
-                    "The deployment could not be found",
-                    "404: This page could not be found",
-                    "Project not found",
-                    "Error: Deployment not found",
-                    "Cannot find deployment",
-                    "The page you're looking for doesn't exist"
-                ])
-                signatures[name]["risk_level"] = "Medium"
-            
-            elif name == "Netlify":
-                signatures[name]["signatures"].extend([
-                    "Not found - Request ID:",
-                    "Welcome to Netlify",
-                    "Domain not found",
-                    "Site not found",
-                    "Unable to resolve this domain",
-                    "This site has not been published"
-                ])
-                signatures[name]["risk_level"] = "Medium"
-            
-            elif name == "DigitalOcean":
-                signatures[name]["signatures"].extend([
-                    "Domain mapping does not exist",
-                    "This domain is not currently being served",
-                    "Domain not found in system",
-                    "The requested app does not exist",
-                    "Application not found",
-                    "Droplet not found",
-                    "The specified Droplet does not exist",
-                    "The App Platform application does not exist",
-                    "The specified Kubernetes cluster does not exist",
-                    "The Load Balancer does not exist",
-                    "The specified database cluster does not exist",
-                    "The specified Space does not exist",
-                    "The specified container registry does not exist",
-                    "The specified Managed Database does not exist",
-                    "The specified Volume does not exist",
-                    "The specified Floating IP does not exist",
-                    "The specified Firewall does not exist",
-                    "The specified Project does not exist",
-                    "Resource not found in your account",
-                    "The specified resource has been deleted"
-                ])
-                signatures[name]["risk_level"] = "High"
-            
-            elif name == "Cloudflare Pages":
-                signatures[name]["signatures"].extend([
-                    "Unknown Pages Site",
-                    "Error 1001",
-                    "Domain not configured",
-                    "Page not found",
-                    "Project not found",
-                    "This website has not been configured"
-                ])
-                signatures[name]["risk_level"] = "Medium"
-            
-            elif name == "Fastly":
-                signatures[name]["signatures"].extend([
-                    "Fastly error: unknown domain",
-                    "Unknown domain",
-                    "Fatal Error",
-                    "Domain not configured",
-                    "No backend configured",
-                    "Service not configured properly"
-                ])
-                signatures[name]["risk_level"] = "High"
-            
-            elif name == "Shopify":
-                signatures[name]["signatures"].extend([
-                    "Sorry, this shop is currently unavailable",
-                    "Only store owners have access to shop",
-                    "This shop is unavailable",
-                    "Sorry, we couldn't find that store",
-                    "Store not found",
-                    "Shop has been deactivated"
-                ])
-                signatures[name]["risk_level"] = "High"
-            
-            elif name == "Squarespace":
-                signatures[name]["signatures"].extend([
-                    "Website Expired",
-                    "You're Almost There...",
-                    "This domain is not connected to a website yet",
-                    "Domain Not Claimed",
-                    "Account Not Available",
-                    "This website has been discontinued"
-                ])
-                signatures[name]["risk_level"] = "Medium"
-            
-            elif name == "Webflow":
-                signatures[name]["signatures"].extend([
-                    "The page you are looking for doesn't exist or has been moved",
-                    "Domain not found",
-                    "Site not published",
-                    "Project not published",
-                    "This site has not been published yet",
-                    "This page is not available"
-                ])
-                signatures[name]["risk_level"] = "Medium"
-            
-            elif name == "Wix":
-                signatures[name]["signatures"].extend([
-                    "Looks Like This Domain Isn't Connected To A Website Yet",
-                    "Domain Not Connected",
-                    "This website has been discontinued",
-                    "This domain is not connected to a website",
-                    "Connect Domain",
-                    "This site hasn't been configured yet"
-                ])
-                signatures[name]["risk_level"] = "Medium"
-            
-            elif name == "Pantheon":
-                signatures[name]["signatures"].extend([
-                    "The gods are dead",
-                    "404 Unknown Site",
-                    "Site Not Found",
-                    "Pantheon - 404 Unknown Site",
-                    "Unknown Pantheon Site",
-                    "No Pantheon Site Found"
-                ])
-                signatures[name]["risk_level"] = "Medium"
-            
-            elif name == "Acquia":
-                signatures[name]["signatures"].extend([
-                    "Site not found",
-                    "Unable to connect to site",
-                    "The requested website is not configured",
-                    "No Acquia site found",
-                    "This site is not available",
-                    "Site configuration not found"
-                ])
-                signatures[name]["risk_level"] = "Medium"
-            
-            elif name == "Surge.sh":
-                signatures[name]["signatures"].extend([
-                    "project not found",
-                    "unable to serve this subdomain",
-                    "404 - Not Found",
-                    "This project does not exist",
-                    "Project configuration not found",
-                    "This domain is not serving a Surge site"
-                ])
-                signatures[name]["risk_level"] = "Low"
-            
-            elif name == "Render":
-                signatures[name]["signatures"].extend([
-                    "Service not found",
-                    "404 not found",
-                    "This service does not exist",
-                    "Could not find the service you requested",
-                    "This deployment does not exist",
-                    "No such service exists"
-                ])
-                signatures[name]["risk_level"] = "Medium"
-            
-            elif name == "Railway":
-                signatures[name]["signatures"].extend([
-                    "404 Not Found",
-                    "Project not found",
-                    "This deployment does not exist",
-                    "Service not found",
-                    "No Railway service found",
-                    "This domain is not configured"
-                ])
-                signatures[name]["risk_level"] = "Medium"
-
-            # Add OVH Cloud
-            elif name == "OVH Cloud":
-                signatures[name]["signatures"].extend([
-                    "This page is hosted by OVH",
-                    "Domain Default page",
-                    "If you're the owner of this domain",
-                    "Hosted by OVH",
-                    "Domain has just been created",
-                    "This domain has not been activated",
-                    "No website has been configured at this address",
-                    "The server configuration is invalid"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add Scaleway
-            elif name == "Scaleway":
-                signatures[name]["signatures"].extend([
-                    "No service is running here",
-                    "Instance not found",
-                    "Resource not found on Scaleway",
-                    "This Scaleway resource does not exist",
-                    "Invalid instance configuration",
-                    "Scaleway service not configured"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add Hetzner Cloud
-            elif name == "Hetzner Cloud":
-                signatures[name]["signatures"].extend([
-                    "Domain not configured",
-                    "This domain has not been configured",
-                    "No website configured at this address",
-                    "Default Hetzner page",
-                    "Project not found on Hetzner Cloud"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add Linode
-            elif name == "Linode":
-                signatures[name]["signatures"].extend([
-                    "This site has not yet been configured",
-                    "Default Linode page",
-                    "Linode domain not configured",
-                    "No application configured",
-                    "Instance not found"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add Vultr
-            elif name == "Vultr":
-                signatures[name]["signatures"].extend([
-                    "No website is configured at this address",
-                    "Instance not found",
-                    "Vultr.com - Default page",
-                    "The server has not been provisioned"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add NATO signatures
-            elif name == "NATO":
-                signatures[name]["signatures"].extend([
-                    "NATO service not configured",
-                    "Alliance resource unavailable",
-                    "NATO domain not active",
-                    "Alliance portal not found",
-                    "NATO site pending configuration",
-                    "Military alliance service inactive"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add US Department of Defense signatures
-            elif name == "US Department of Defense":
-                signatures[name]["signatures"].extend([
-                    "DoD resource not found",
-                    "Military domain not configured",
-                    "Defense service unavailable",
-                    "Military portal inactive",
-                    "DoD site pending setup",
-                    ".mil domain not active"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add US Government signatures
-            elif name == "US Government":
-                signatures[name]["signatures"].extend([
-                    "This .gov domain is not active",
-                    "U.S. Government service not configured",
-                    "Federal service unavailable",
-                    "Agency website not found",
-                    ".gov domain not configured",
-                    "Government resource unavailable",
-                    "Federal portal inactive",
-                    "U.S. agency service pending"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add UK Government signatures
-            elif name == "UK Government":
-                signatures[name]["signatures"].extend([
-                    "This .gov.uk domain is not active",
-                    "UK Government service not found",
-                    "Crown service unavailable",
-                    "Government gateway error",
-                    ".gov.uk resource not found",
-                    "UK public service inactive",
-                    "British government portal pending"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add EU Government signatures
-            elif name == "EU Government":
-                signatures[name]["signatures"].extend([
-                    "Europa.eu service not found",
-                    "European Union resource unavailable",
-                    "EU service configuration required",
-                    ".europa.eu domain not active",
-                    "European Commission service inactive",
-                    "EU portal not configured"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Comcast Business signatures
-            elif name == "Comcast Business":
-                signatures[name]["signatures"].extend([
-                    "Comcast Business service not configured",
-                    "Xfinity domain not found",
-                    "Business service requires setup",
-                    "Comcast hosting not configured",
-                    "Business portal inactive"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add Verizon Business signatures
-            elif name == "Verizon Business":
-                signatures[name]["signatures"].extend([
-                    "Verizon Business not configured",
-                    "Enterprise service unavailable",
-                    "Verizon hosting setup required",
-                    "Business domain not active",
-                    "Enterprise portal pending"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add AT&T Business signatures
-            elif name == "AT&T Business":
-                signatures[name]["signatures"].extend([
-                    "AT&T Business service inactive",
-                    "Enterprise hosting not found",
-                    "Business portal not configured",
-                    "AT&T domain pending setup",
-                    "Enterprise service unavailable"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add BT Business signatures
-            elif name == "BT Business":
-                signatures[name]["signatures"].extend([
-                    "BT Business service not found",
-                    "BT Enterprise hosting not configured",
-                    "Business broadband service inactive",
-                    "BT domain not setup",
-                    "Enterprise portal unavailable"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add Virgin Media Business signatures
-            elif name == "Virgin Media Business":
-                signatures[name]["signatures"].extend([
-                    "Virgin Media Business not configured",
-                    "Business service unavailable",
-                    "Virgin hosting not active",
-                    "Business portal pending setup",
-                    "Enterprise service inactive"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add Deutsche Telekom signatures
-            elif name == "Deutsche Telekom":
-                signatures[name]["signatures"].extend([
-                    "Telekom service not configured",
-                    "Business portal unavailable",
-                    "Deutsche Telekom hosting inactive",
-                    "Enterprise service pending",
-                    "Telekom domain not setup"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add Orange Business signatures
-            elif name == "Orange Business":
-                signatures[name]["signatures"].extend([
-                    "Orange Business not configured",
-                    "Enterprise service unavailable",
-                    "Orange hosting inactive",
-                    "Business portal pending",
-                    "Service not activated"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add Telefonica signatures
-            elif name == "Telefonica":
-                signatures[name]["signatures"].extend([
-                    "Telefonica service not configured",
-                    "Business portal unavailable",
-                    "Enterprise hosting inactive",
-                    "Movistar service pending",
-                    "Business domain not active"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-            # Add DISA Cloud signatures
-            elif name == "DISA Cloud (milCloud)":
-                signatures[name]["signatures"].extend([
-                    "milCloud service not configured",
-                    "DISA cloud resource unavailable",
-                    "Military cloud service inactive",
-                    "DISA platform error",
-                    "milCloud application not found",
-                    "Defense cloud service pending",
-                    "DISA resource not accessible",
-                    "Military platform configuration required"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Air Force Cloud One signatures
-            elif name == "US Air Force Cloud One":
-                signatures[name]["signatures"].extend([
-                    "Cloud One service not found",
-                    "Air Force cloud resource unavailable",
-                    "Platform One error",
-                    "USAF cloud configuration required",
-                    "Air Force application not found",
-                    "Military cloud access restricted",
-                    "Cloud One platform error",
-                    "USAF service not configured"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Army cArmy signatures
-            elif name == "US Army cArmy":
-                signatures[name]["signatures"].extend([
-                    "cArmy service not found",
-                    "Army cloud resource unavailable",
-                    "Military application error",
-                    "Army cloud configuration required",
-                    "cArmy platform not accessible",
-                    "Army service not configured",
-                    "Military cloud error",
-                    "Army portal unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Navy NIWC Cloud signatures
-            elif name == "US Navy NIWC Cloud":
-                signatures[name]["signatures"].extend([
-                    "NIWC cloud service not found",
-                    "Navy cloud resource unavailable",
-                    "Naval platform error",
-                    "NIWC configuration required",
-                    "Navy cloud access restricted",
-                    "Naval service not configured",
-                    "NIWC platform unavailable",
-                    "Navy portal error"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add UK MOD Defence Digital signatures
-            elif name == "UK MOD Defence Digital":
-                signatures[name]["signatures"].extend([
-                    "Defence Digital service not found",
-                    "MOD cloud resource unavailable",
-                    "UK defence platform error",
-                    "Defence cloud configuration required",
-                    "MOD service not configured",
-                    "UK military cloud error",
-                    "Defence portal unavailable",
-                    "Military gateway error"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add NATO NCIA Cloud signatures
-            elif name == "NATO NCIA Cloud":
-                signatures[name]["signatures"].extend([
-                    "NCIA cloud service not found",
-                    "NATO cloud resource unavailable",
-                    "Alliance platform error",
-                    "NCIA configuration required",
-                    "NATO service not configured",
-                    "Alliance cloud error",
-                    "NCIA portal unavailable",
-                    "NATO gateway error"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Australian Defence Cloud signatures
-            elif name == "Australian Defence Cloud":
-                signatures[name]["signatures"].extend([
-                    "Defence cloud service not found",
-                    "ADF resource unavailable",
-                    "Australian military platform error",
-                    "Defence cloud configuration required",
-                    "ADF service not configured",
-                    "Australian defence cloud error",
-                    "Military portal unavailable",
-                    "Defence gateway error"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add French Ministry of Armed Forces Cloud signatures
-            elif name == "French Ministry of Armed Forces Cloud":
-                signatures[name]["signatures"].extend([
-                    "Défense cloud service not found",
-                    "Armées resource unavailable",
-                    "French military platform error",
-                    "Défense cloud configuration required",
-                    "Military service not configured",
-                    "French defence cloud error",
-                    "Armées portal unavailable",
-                    "Défense gateway error"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add German Bundeswehr IT signatures
-            elif name == "German Bundeswehr IT":
-                signatures[name]["signatures"].extend([
-                    "Bundeswehr cloud service not found",
-                    "German military resource unavailable",
-                    "Defence platform error",
-                    "Bundeswehr configuration required",
-                    "Military service not configured",
-                    "German defence cloud error",
-                    "Bundeswehr portal unavailable",
-                    "Military gateway error"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Israeli Defense Cloud signatures
-            elif name == "Israeli Defense Cloud":
-                signatures[name]["signatures"].extend([
-                    "IDF cloud service not found",
-                    "Israeli military resource unavailable",
-                    "Defence platform error",
-                    "IDF cloud configuration required",
-                    "Military service not configured",
-                    "Israeli defence cloud error",
-                    "IDF portal unavailable",
-                    "Defense gateway error"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add US GSA Cloud signatures
-            elif name == "US GSA Cloud":
-                signatures[name]["signatures"].extend([
-                    "GSA service not configured",
-                    "Federal cloud resource unavailable",
-                    "Government platform error",
-                    "GSA cloud configuration required",
-                    "Federal service not found",
-                    "Government portal inactive",
-                    "Cloud.gov service error",
-                    "Federal gateway timeout"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add US FedRAMP signatures
-            elif name == "US FedRAMP":
-                signatures[name]["signatures"].extend([
-                    "FedRAMP service not found",
-                    "Federal authorization inactive",
-                    "Government compliance error",
-                    "FedRAMP portal unavailable",
-                    "Authorization status pending",
-                    "Federal security gateway error",
-                    "Compliance check failed",
-                    "Authorization service timeout"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add UK Government Digital Service signatures
-            elif name == "UK Government Digital Service":
-                signatures[name]["signatures"].extend([
-                    "GDS service not found",
-                    "Government platform unavailable",
-                    "Digital service error",
-                    "GOV.UK configuration required",
-                    "Crown service inactive",
-                    "Government gateway error",
-                    "Digital portal timeout",
-                    "Public service unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Canadian Government Cloud signatures
-            elif name == "Canadian Government Cloud":
-                signatures[name]["signatures"].extend([
-                    "GC Cloud service not found",
-                    "Government of Canada resource unavailable",
-                    "Federal service error",
-                    "GC configuration required",
-                    "Canadian government service inactive",
-                    "Federal portal error",
-                    "Government gateway timeout",
-                    "Public service unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Australian Government Cloud signatures
-            elif name == "Australian Government Cloud":
-                signatures[name]["signatures"].extend([
-                    "DTA cloud service not found",
-                    "Australian government resource unavailable",
-                    "Federal platform error",
-                    "Government configuration required",
-                    "Australian public service inactive",
-                    "Government portal error",
-                    "Digital service timeout",
-                    "Agency gateway unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add New Zealand Government Cloud signatures
-            elif name == "New Zealand Government Cloud":
-                signatures[name]["signatures"].extend([
-                    "Government cloud service not found",
-                    "NZ resource unavailable",
-                    "Government platform error",
-                    "Digital service configuration required",
-                    "Public service inactive",
-                    "Government portal error",
-                    "Digital gateway timeout",
-                    "Agency service unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Singapore Government Cloud signatures
-            elif name == "Singapore Government Cloud":
-                signatures[name]["signatures"].extend([
-                    "SGTS cloud service not found",
-                    "Singapore government resource unavailable",
-                    "Government platform error",
-                    "Public service configuration required",
-                    "Government tech service inactive",
-                    "Digital portal error",
-                    "Agency gateway timeout",
-                    "Government service unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add India Government Cloud signatures
-            elif name == "India Government Cloud (MeghRaj)":
-                signatures[name]["signatures"].extend([
-                    "MeghRaj service not found",
-                    "Indian government resource unavailable",
-                    "Government platform error",
-                    "NIC service configuration required",
-                    "Digital India service inactive",
-                    "Government portal error",
-                    "Agency gateway timeout",
-                    "Public service unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add European Commission Cloud signatures
-            elif name == "European Commission Cloud":
-                signatures[name]["signatures"].extend([
-                    "EC cloud service not found",
-                    "European Commission resource unavailable",
-                    "EU platform error",
-                    "Commission service configuration required",
-                    "EU digital service inactive",
-                    "European portal error",
-                    "Commission gateway timeout",
-                    "EU service unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add German Government Cloud signatures
-            elif name == "German Government Cloud":
-                signatures[name]["signatures"].extend([
-                    "Bund cloud service not found",
-                    "German government resource unavailable",
-                    "Federal platform error",
-                    "Government service configuration required",
-                    "Public service inactive",
-                    "Federal portal error",
-                    "Agency gateway timeout",
-                    "Government service unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add French Government Cloud signatures
-            elif name == "French Government Cloud (Cloud π)":
-                signatures[name]["signatures"].extend([
-                    "Cloud π service not found",
-                    "French government resource unavailable",
-                    "Government platform error",
-                    "Public service configuration required",
-                    "DINUM service inactive",
-                    "Government portal error",
-                    "Agency gateway timeout",
-                    "Service public unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Netherlands Government Cloud signatures
-            elif name == "Netherlands Government Cloud":
-                signatures[name]["signatures"].extend([
-                    "Overheid cloud service not found",
-                    "Dutch government resource unavailable",
-                    "Government platform error",
-                    "Public service configuration required",
-                    "Rijksoverheid service inactive",
-                    "Government portal error",
-                    "Agency gateway timeout",
-                    "Public service unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Japan Government Cloud signatures
-            elif name == "Japan Government Cloud":
-                signatures[name]["signatures"].extend([
-                    "Government cloud service not found",
-                    "Japanese government resource unavailable",
-                    "Digital platform error",
-                    "Public service configuration required",
-                    "Government service inactive",
-                    "Digital portal error",
-                    "Agency gateway timeout",
-                    "e-Gov service unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add South Korea Government Cloud signatures
-            elif name == "South Korea Government Cloud (G-Cloud)":
-                signatures[name]["signatures"].extend([
-                    "G-Cloud service not found",
-                    "Korean government resource unavailable",
-                    "Government platform error",
-                    "Public service configuration required",
-                    "G-Cloud service inactive",
-                    "Government portal error",
-                    "Agency gateway timeout",
-                    "e-Government service unavailable"
-                ])
-                signatures[name]["risk_level"] = "Critical"
-
-            # Add Cloudflare signatures
-            elif name == "Cloudflare":
-                signatures[name]["signatures"].extend([
-                    "DNS points to prohibited IP",
-                    "Direct IP access not allowed",
-                    "Please check your DNS settings",
-                    "Domain is not configured",
-                    "Error 1001",
-                    "Error 1002",
-                    "Error 1003",
-                    "Error 1004",
-                    "Error 1006",
-                    "Error 1007",
-                    "Error 1008",
-                    "Error 1009",
-                    "Error 1010",
-                    "Error 1011",
-                    "Error 1012",
-                    "Error 1013",
-                    "Error 1014",
-                    "Error 1015",
-                    "Error 1016",
-                    "Error 1018",
-                    "Error 1019",
-                    "Error 1020",
-                    "Error 1021",
-                    "Error 1022",
-                    "Error 1023",
-                    "Error 1024",
-                    "Error 1025",
-                    "Error 1026",
-                    "Error 1027",
-                    "Error 1028",
-                    "Error 1029",
-                    "Error 1030",
-                    "Error 1031",
-                    "Error 1032",
-                    "Error 1033",
-                    "Error 1034",
-                    "Error 1035",
-                    "Error 1036",
-                    "Error 1037",
-                    "Error 1038",
-                    "The specified Workers script does not exist",
-                    "The specified Pages project does not exist",
-                    "The specified Load Balancer does not exist",
-                    "The specified Stream does not exist",
-                    "The specified Access application does not exist",
-                    "The specified WAF rule does not exist",
-                    "The specified Zone does not exist",
-                    "The specified SSL certificate does not exist"
-                ])
-                signatures[name]["risk_level"] = "High"
-
-        return signatures
-
-    def _build_provider_patterns(self) -> Dict[str, List[re.Pattern]]:
-        """Build compiled regex patterns for each provider's CNAME domains"""
-        patterns = {}
-        for provider in self.providers:
-            patterns[provider['name']] = [
-                re.compile(re.escape(domain), re.I) 
-                for domain in provider.get('dns_domains', [])
-            ]
-        return patterns
-
-    def _build_provider_tld_map(self) -> Dict[str, Set[str]]:
-        """Build a map of TLDs to potential providers for quick filtering"""
-        tld_map = {}
-        for provider in self.providers:
-            for domain in provider.get('dns_domains', []):
-                tld = domain.split('.')[-1]
-                if tld not in tld_map:
-                    tld_map[tld] = set()
-                tld_map[tld].add(provider['name'])
-        return tld_map
-
-    def _build_provider_keyword_map(self) -> Dict[str, Set[str]]:
-        """Build a map of keywords to potential providers for quick filtering"""
-        keyword_map = {}
-        for provider in self.providers:
-            for domain in provider.get('dns_domains', []):
-                parts = domain.split('.')
-                for part in parts[:-1]:  # Exclude TLD
-                    if len(part) > 3:  # Only use meaningful keywords
-                        if part not in keyword_map:
-                            keyword_map[part] = set()
-                        keyword_map[part].add(provider['name'])
-        return keyword_map
-
-    @lru_cache(maxsize=1024)
-    def _get_cname_record(self, subdomain: str) -> Optional[str]:
-        """Get CNAME record with caching"""
+        # Common response patterns indicating takeover possibility
+        self.takeover_indicators = {
+            "NoSuchBucket": "AWS S3 bucket not claimed",
+            "NoSuchWebApp": "Azure Web App available",
+            "NoSuchInstance": "GCP instance not claimed",
+            "404 Not Found": "Resource not found",
+            "403 Forbidden": "Access denied but resource exists",
+            "DNS resolution failed": "DNS record exists but no service"
+        }
+    
+    def setup_tool_arguments(self, parser: argparse.ArgumentParser) -> None:
+        """Set up tool-specific arguments"""
+        parser.add_argument('domain', help='Domain to analyze')
+        parser.add_argument('--provider', choices=['aws', 'azure', 'gcp', 'all'],
+                          default='all', help='Cloud provider to check')
+        parser.add_argument('--timeout', type=int, default=10,
+                          help='Connection timeout in seconds')
+        parser.add_argument('--threads', type=int, default=5,
+                          help='Number of concurrent threads')
+        parser.add_argument('--check-dns', action='store_true',
+                          help='Check DNS misconfigurations')
+        parser.add_argument('--check-http', action='store_true',
+                          help='Check HTTP responses')
+        parser.add_argument('--check-all', action='store_true',
+                          help='Run all checks')
+    
+    def execute_tool(self, args: argparse.Namespace, result: ToolResult) -> None:
+        """Execute cloud takeover detection"""
         try:
-            if subdomain in self.dns_cache:
-                return self.dns_cache[subdomain]
+            # Check dependencies
+            if MISSING_DEPS:
+                result.add_error(f"Missing required dependencies: {', '.join(MISSING_DEPS)}")
+                return
             
-            cname_answers = self.resolver.resolve(subdomain, 'CNAME')
-            cname = str(cname_answers[0].target).rstrip('.')
-            self.dns_cache[subdomain] = cname
-            return cname
-        except Exception:
-            return None
-
-    def _get_potential_providers(self, cname: str) -> Set[str]:
-        """Get potential providers based on TLD and keywords"""
-        potential_providers = set()
-        
-        # Check TLD
-        tld = cname.split('.')[-1]
-        if tld in self.provider_tlds:
-            potential_providers.update(self.provider_tlds[tld])
-        
-        # Check keywords
-        parts = cname.split('.')
-        for part in parts[:-1]:
-            if part in self.provider_keywords:
-                potential_providers.update(self.provider_keywords[part])
-        
-        # If no providers found or selected providers specified, return all providers
-        if not potential_providers or self.selected_providers:
-            return {p['name'] for p in self.providers}
-        
-        return potential_providers
-
-    def _match_provider(self, cname: str) -> Optional[str]:
-        """Match CNAME against provider patterns efficiently"""
-        # Get potential providers first
-        potential_providers = self._get_potential_providers(cname)
-        
-        # Only check patterns for potential providers
-        for provider_name, patterns in self.provider_patterns.items():
-            if provider_name in potential_providers:
-                for pattern in patterns:
-                    if pattern.search(cname):
-                        return provider_name
-        return None
-
-    async def _resolve_dns_concurrent(self, subdomains: List[str]) -> Dict[str, str]:
-        """Resolve DNS records concurrently"""
-        dns_results = {}
-        
-        def resolve_single(subdomain):
-            try:
-                cname = self._get_cname_record(subdomain)
-                if cname:
-                    dns_results[subdomain] = cname
-            except Exception:
-                pass
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as executor:
-            executor.map(resolve_single, subdomains)
-        
-        return dns_results
-
-    def _check_provider_vulnerability(self, subdomain: str, cname: str, provider_name: str) -> Optional[TakeoverResult]:
-        """Check for vulnerability with specific provider"""
-        signatures = self._build_takeover_signatures()
-        provider_data = signatures.get(provider_name, {})
-        
-        if not provider_data:
-            return None
-
-        # Provider-specific optimizations
-        if provider_name == "Amazon Web Services (AWS)":
-            # Check S3 bucket first
-            if any(p in cname for p in ['.s3.', '-s3-']):
-                try:
-                    response = requests.head(
-                        f"https://{subdomain}",
-                        timeout=self.timeout,
-                        allow_redirects=False
-                    )
-                    if response.status_code in [404, 403]:
-                        return TakeoverResult(
-                            subdomain=subdomain,
-                            provider=provider_name,
-                            cname=cname,
-                            vulnerability_type="Unclaimed S3 Bucket",
-                            evidence="S3 bucket not properly configured",
-                            status_code=response.status_code,
-                            is_vulnerable=True,
-                            risk_level="High"
-                        )
-                except:
-                    pass
-
-        elif provider_name == "Microsoft Azure":
-            # Check Azure services first
-            if '.azurewebsites.' in cname:
-                try:
-                    response = requests.get(
-                        f"https://{subdomain}",
-                        timeout=self.timeout,
-                        allow_redirects=False
-                    )
-                    if response.status_code == 404:
-                        return TakeoverResult(
-                            subdomain=subdomain,
-                            provider=provider_name,
-                            cname=cname,
-                            vulnerability_type="Unclaimed Azure Web App",
-                            evidence="Azure Web App not configured",
-                            status_code=response.status_code,
-                            is_vulnerable=True,
-                            risk_level="High"
-                        )
-                except:
-                    pass
-        
-        # Try to fetch the domain with both protocols
-        for protocol in ['https', 'http']:
-            try:
-                response = requests.get(
-                    f"{protocol}://{subdomain}",
-                    timeout=self.timeout,
-                    allow_redirects=True,
-                    verify=False,
-                    headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                    }
+            # Update metadata
+            result.metadata.update({
+                "domain": args.domain,
+                "timestamp": datetime.now().isoformat(),
+                "provider": args.provider,
+                "checks": {
+                    "dns": args.check_all or args.check_dns,
+                    "http": args.check_all or args.check_http
+                }
+            })
+            
+            # Analyze domain
+            scan_result = self.analyze_domain(args.domain, args)
+            
+            # Add findings based on analysis
+            if scan_result.is_vulnerable:
+                result.add_finding(
+                    title=f"Potential Cloud Takeover: {scan_result.domain}",
+                    description=f"Domain appears vulnerable to cloud service takeover" + 
+                              (f" on {scan_result.provider}" if scan_result.provider else ""),
+                    risk_level=scan_result.risk_level,
+                    evidence="\n".join(scan_result.evidence)
                 )
-                content = response.text.lower()
+            
+            # Add provider-specific findings
+            if scan_result.details.get("provider_findings"):
+                for finding in scan_result.details["provider_findings"]:
+                    result.add_finding(
+                        title=finding["title"],
+                        description=finding["description"],
+                        risk_level=finding["risk_level"],
+                        evidence=finding.get("evidence", "No specific evidence")
+                    )
+            
+            # Add any errors
+            for error in scan_result.errors:
+                result.add_error(error)
+            
+        except Exception as e:
+            result.add_error(f"Error during cloud takeover detection: {str(e)}")
+    
+    def analyze_domain(self, domain: str, args: argparse.Namespace) -> CloudTakeoverResult:
+        """Analyze a domain for cloud service takeover vulnerabilities"""
+        evidence = []
+        errors = []
+        details = {}
+        provider = None
+        is_vulnerable = False
+        risk_level = "Info"
+        
+        try:
+            # Check DNS records
+            if args.check_all or args.check_dns:
+                dns_results = self._check_dns_records(domain)
+                if dns_results.get("evidence"):
+                    evidence.extend(dns_results["evidence"])
+                if dns_results.get("errors"):
+                    errors.extend(dns_results["errors"])
+                if dns_results.get("provider"):
+                    provider = dns_results["provider"]
+                details["dns_results"] = dns_results
+            
+            # Check HTTP responses
+            if args.check_all or args.check_http:
+                http_results = self._check_http_endpoints(domain)
+                if http_results.get("evidence"):
+                    evidence.extend(http_results["evidence"])
+                if http_results.get("errors"):
+                    errors.extend(http_results["errors"])
+                details["http_results"] = http_results
+            
+            # Check specific provider if specified
+            if args.provider != 'all':
+                provider_results = self._check_provider(domain, args.provider)
+                if provider_results.get("evidence"):
+                    evidence.extend(provider_results["evidence"])
+                if provider_results.get("errors"):
+                    errors.extend(provider_results["errors"])
+                details["provider_results"] = provider_results
+            
+            # Determine if vulnerable based on evidence
+            is_vulnerable = bool(evidence)
+            risk_level = "High" if is_vulnerable else "Info"
+            
+            return CloudTakeoverResult(
+                domain=domain,
+                provider=provider,
+                is_vulnerable=is_vulnerable,
+                evidence=evidence,
+                risk_level=risk_level,
+                details=details,
+                errors=errors
+            )
+            
+        except Exception as e:
+            return CloudTakeoverResult(
+                domain=domain,
+                provider=None,
+                is_vulnerable=False,
+                evidence=[],
+                risk_level="Error",
+                details={},
+                errors=[f"Error during analysis: {str(e)}"]
+            )
+    
+    def _check_dns_records(self, domain: str) -> Dict:
+        """Check DNS records for takeover indicators"""
+        results = {
+            "evidence": [],
+            "errors": [],
+            "provider": None,
+            "records": {}
+        }
+        
+        try:
+            resolver = dns.resolver.Resolver()
+            
+            # Check A records
+            try:
+                answers = resolver.resolve(domain, 'A')
+                results["records"]["A"] = [str(rdata) for rdata in answers]
+            except dns.resolver.NXDOMAIN:
+                results["evidence"].append(f"Domain {domain} does not exist but may be claimable")
+            except Exception as e:
+                results["errors"].append(f"Error checking A records: {str(e)}")
+            
+            # Check CNAME records
+            try:
+                answers = resolver.resolve(domain, 'CNAME')
+                cnames = [str(rdata.target) for rdata in answers]
+                results["records"]["CNAME"] = cnames
                 
-                # Check for takeover signatures
-                for signature in provider_data.get("signatures", []):
-                    if signature.lower() in content:
-                        return TakeoverResult(
-                            subdomain=subdomain,
-                            provider=provider_name,
-                            cname=cname,
-                            vulnerability_type="Unclaimed Service",
-                            evidence=signature,
-                            status_code=response.status_code,
-                            is_vulnerable=True,
-                            risk_level=provider_data.get("risk_level", "Medium")
-                        )
-            except requests.exceptions.RequestException:
-                continue
-        
-        # If we can't connect at all, might indicate takeover possibility
-        return TakeoverResult(
-            subdomain=subdomain,
-            provider=provider_name,
-            cname=cname,
-            vulnerability_type="Unreachable Service",
-            evidence="Connection failed",
-            status_code=0,
-            is_vulnerable=True,
-            risk_level=provider_data.get("risk_level", "Medium")
-        )
-
-    def check_subdomain(self, subdomain: str) -> Optional[TakeoverResult]:
-        """Check a single subdomain for takeover vulnerabilities"""
-        try:
-            # Get CNAME record
-            cname = self._get_cname_record(subdomain)
-            if not cname:
-                return None
+                # Check for cloud service patterns
+                for provider, info in self.providers.items():
+                    for service, pattern in info["patterns"].items():
+                        import re
+                        for cname in cnames:
+                            if re.search(pattern, cname):
+                                results["provider"] = provider
+                                results["evidence"].append(
+                                    f"CNAME points to {provider} {service} service: {cname}"
+                                )
+            except dns.resolver.NXDOMAIN:
+                pass
+            except Exception as e:
+                results["errors"].append(f"Error checking CNAME records: {str(e)}")
             
-            # Match provider
-            provider_name = self._match_provider(cname)
-            if not provider_name:
-                return None
-            
-            # Check for vulnerability
-            return self._check_provider_vulnerability(subdomain, cname, provider_name)
+            return results
             
         except Exception as e:
-            print(f"{Fore.RED}[!] Error checking {subdomain}: {e}")
-            return None
-
-    def scan_subdomains(self, subdomains: List[str]) -> List[TakeoverResult]:
-        """Scan a list of subdomains for takeover vulnerabilities"""
-        print(f"{Fore.BLUE}[*] Starting subdomain takeover scan...")
-        print(f"{Fore.BLUE}[*] Checking {len(subdomains)} subdomains against {len(self.providers)} providers")
+            results["errors"].append(f"Error during DNS checks: {str(e)}")
+            return results
+    
+    def _check_http_endpoints(self, domain: str) -> Dict:
+        """Check HTTP endpoints for takeover indicators"""
+        results = {
+            "evidence": [],
+            "errors": [],
+            "responses": {}
+        }
         
-        start_time = time.time()
-        
-        # First, resolve all DNS records concurrently
-        print(f"{Fore.BLUE}[*] Resolving DNS records...")
-        dns_results = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as executor:
-            future_to_subdomain = {
-                executor.submit(self._get_cname_record, subdomain): subdomain 
-                for subdomain in subdomains
-            }
-            
-            for future in concurrent.futures.as_completed(future_to_subdomain):
-                subdomain = future_to_subdomain[future]
+        try:
+            # Check both HTTP and HTTPS
+            for protocol in ['http', 'https']:
+                url = f"{protocol}://{domain}"
                 try:
-                    cname = future.result()
-                    if cname:
-                        dns_results[subdomain] = cname
-                except Exception:
-                    continue
-        
-        print(f"{Fore.BLUE}[*] Found {len(dns_results)} CNAME records")
-        
-        # Then, check for vulnerabilities concurrently
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as executor:
-            future_to_subdomain = {
-                executor.submit(self.check_subdomain, subdomain): subdomain 
-                for subdomain, cname in dns_results.items()
-            }
-            
-            for future in concurrent.futures.as_completed(future_to_subdomain):
-                subdomain = future_to_subdomain[future]
-                try:
-                    result = future.result()
-                    if result and result.is_vulnerable:
-                        self.results.append(result)
-                        risk_color = Fore.RED if result.risk_level == "High" else (Fore.YELLOW if result.risk_level == "Medium" else Fore.BLUE)
-                        print(f"{risk_color}[!] Potential takeover found: {result.subdomain}")
-                        print(f"{risk_color}    Provider: {result.provider}")
-                        print(f"{risk_color}    CNAME: {result.cname}")
-                        print(f"{risk_color}    Type: {result.vulnerability_type}")
-                        print(f"{risk_color}    Risk Level: {result.risk_level}")
-                        print(f"{risk_color}    Evidence: {result.evidence}")
-                except Exception as e:
-                    print(f"{Fore.RED}[!] Error scanning {subdomain}: {e}")
-        
-        end_time = time.time()
-        duration = end_time - start_time
-        print(f"{Fore.GREEN}[+] Scan completed in {duration:.2f} seconds")
-        
-        return self.results
-
-    def generate_report(self, output_file: str = None):
-        """Generate a JSON report of findings"""
-        report = {
-            "scan_results": {
-                "domain": self.domain,
-                "total_vulnerabilities": len(self.results),
-                "findings_by_risk": {
-                    "High": len([r for r in self.results if r.risk_level == "High"]),
-                    "Medium": len([r for r in self.results if r.risk_level == "Medium"]),
-                    "Low": len([r for r in self.results if r.risk_level == "Low"])
-                },
-                "findings": [
-                    {
-                        "subdomain": result.subdomain,
-                        "provider": result.provider,
-                        "cname": result.cname,
-                        "vulnerability_type": result.vulnerability_type,
-                        "evidence": result.evidence,
-                        "status_code": result.status_code,
-                        "risk_level": result.risk_level,
-                        "remediation": self._get_remediation_steps(result)
+                    response = requests.get(url, timeout=10, allow_redirects=True)
+                    results["responses"][protocol] = {
+                        "status_code": response.status_code,
+                        "headers": dict(response.headers),
+                        "content_length": len(response.content)
                     }
-                    for result in self.results
-                ]
-            }
+                    
+                    # Check for takeover indicators in response
+                    for indicator, description in self.takeover_indicators.items():
+                        if indicator in response.text:
+                            results["evidence"].append(
+                                f"{protocol.upper()} endpoint indicates possible takeover: {description}"
+                            )
+                except requests.exceptions.RequestException as e:
+                    results["errors"].append(f"Error checking {url}: {str(e)}")
+        
+        except Exception as e:
+            results["errors"].append(f"Error during HTTP checks: {str(e)}")
+        
+        return results
+    
+    def _check_provider(self, domain: str, provider: str) -> Dict:
+        """Check specific cloud provider for takeover possibilities"""
+        results = {
+            "evidence": [],
+            "errors": [],
+            "findings": []
         }
         
-        if output_file:
-            with open(output_file, 'w') as f:
-                json.dump(report, f, indent=4)
-            print(f"{Fore.GREEN}[+] Report saved to {output_file}")
+        try:
+            if provider == "aws":
+                self._check_aws(domain, results)
+            elif provider == "azure":
+                self._check_azure(domain, results)
+            elif provider == "gcp":
+                self._check_gcp(domain, results)
+        except Exception as e:
+            results["errors"].append(f"Error checking {provider}: {str(e)}")
         
-        return report
-
-    def _get_remediation_steps(self, result: TakeoverResult) -> Dict[str, str]:
-        """Get remediation steps based on the provider and vulnerability type"""
-        steps = {
-            "general_guidance": "Verify ownership and claim the resource if legitimate",
-            "specific_steps": [],
-            "documentation_links": []
-        }
-        
-        if result.provider == "Amazon Web Services (AWS)":
-            steps["specific_steps"] = [
-                "1. Log in to AWS Console",
-                "2. Navigate to the relevant service (S3, CloudFront, etc.)",
-                "3. Create the resource with the exact name from the CNAME",
-                "4. Configure appropriate security settings",
-                "5. Enable logging and monitoring",
-                "6. Set up appropriate bucket policies or IAM roles"
-            ]
-            steps["documentation_links"] = [
-                "https://docs.aws.amazon.com/AmazonS3/latest/userguide/WebsiteHosting.html",
-                "https://aws.amazon.com/premiumsupport/knowledge-center/s3-domain-name-redirect/"
-            ]
-        
-        elif result.provider == "Microsoft Azure":
-            steps["specific_steps"] = [
-                "1. Log in to Azure Portal",
-                "2. Create the required resource (Web App, Function, etc.)",
-                "3. Verify custom domain ownership",
-                "4. Configure SSL/TLS bindings",
-                "5. Set up application monitoring",
-                "6. Configure authentication and authorization"
-            ]
-            steps["documentation_links"] = [
-                "https://docs.microsoft.com/en-us/azure/app-service/app-service-web-tutorial-custom-domain",
-                "https://docs.microsoft.com/en-us/azure/app-service/configure-ssl-bindings"
-            ]
-        
-        elif result.provider == "Google Cloud Platform (GCP)":
-            steps["specific_steps"] = [
-                "1. Access Google Cloud Console",
-                "2. Create the required resource",
-                "3. Verify domain ownership in Cloud DNS",
-                "4. Configure HTTPS and security settings",
-                "5. Set up Cloud Monitoring",
-                "6. Configure IAM permissions"
-            ]
-            steps["documentation_links"] = [
-                "https://cloud.google.com/dns/docs/tutorials/create-domain-tutorial",
-                "https://cloud.google.com/load-balancing/docs/ssl-certificates"
-            ]
-        
-        elif result.provider == "GitHub Pages":
-            steps["specific_steps"] = [
-                "1. Create/configure the GitHub repository",
-                "2. Enable GitHub Pages in repository settings",
-                "3. Verify custom domain configuration",
-                "4. Add CNAME file to repository",
-                "5. Configure SSL/TLS",
-                "6. Set up branch protection rules"
-            ]
-            steps["documentation_links"] = [
-                "https://docs.github.com/en/pages/configuring-a-custom-domain-for-your-github-pages-site",
-                "https://docs.github.com/en/pages/getting-started-with-github-pages"
-            ]
-        
-        elif result.provider == "Heroku":
-            steps["specific_steps"] = [
-                "1. Log in to Heroku Dashboard",
-                "2. Create new application",
-                "3. Configure custom domain",
-                "4. Add SSL certificate",
-                "5. Set up monitoring",
-                "6. Configure environment variables"
-            ]
-            steps["documentation_links"] = [
-                "https://devcenter.heroku.com/articles/custom-domains",
-                "https://devcenter.heroku.com/articles/ssl"
-            ]
-        
-        elif result.provider == "Vercel":
-            steps["specific_steps"] = [
-                "1. Log in to Vercel Dashboard",
-                "2. Create or import project",
-                "3. Add custom domain",
-                "4. Configure domain settings",
-                "5. Set up environment variables",
-                "6. Configure project settings"
-            ]
-            steps["documentation_links"] = [
-                "https://vercel.com/docs/concepts/projects/domains",
-                "https://vercel.com/docs/concepts/projects/environment-variables"
-            ]
-        
-        elif result.provider == "OVH Cloud":
-            steps["specific_steps"] = [
-                "1. Log in to OVH Control Panel",
-                "2. Navigate to Hosting or Cloud section",
-                "3. Create or configure the service",
-                "4. Set up DNS records",
-                "5. Configure SSL certificate",
-                "6. Set up monitoring"
-            ]
-            steps["documentation_links"] = [
-                "https://docs.ovh.com/gb/en/hosting/",
-                "https://docs.ovh.com/gb/en/domains/"
-            ]
-
-        elif result.provider == "US Government":
-            steps["specific_steps"] = [
-                "1. Contact the relevant federal agency",
-                "2. Verify domain ownership through .gov registry",
-                "3. Follow federal security requirements",
-                "4. Implement required security controls",
-                "5. Set up monitoring and compliance",
-                "6. Document configuration"
-            ]
-            steps["documentation_links"] = [
-                "https://home.dotgov.gov/registration/",
-                "https://digital.gov/resources/checklist-of-requirements-for-federal-digital-services/"
-            ]
-        
-        # Add default steps for other providers
-        if not steps["specific_steps"]:
-            steps["specific_steps"] = [
-                "1. Log in to provider dashboard",
-                "2. Create necessary resources",
-                "3. Configure domain settings",
-                "4. Set up security measures",
-                "5. Enable monitoring",
-                "6. Document configuration"
-            ]
-        
-        return steps
+        return results
+    
+    def _check_aws(self, domain: str, results: Dict) -> None:
+        """Check AWS-specific takeover possibilities"""
+        try:
+            # Initialize AWS session
+            session = boto3.Session()
+            
+            # Check S3
+            s3_client = session.client('s3')
+            if '.s3.' in domain:
+                bucket_name = domain.split('.s3.')[0]
+                try:
+                    s3_client.head_bucket(Bucket=bucket_name)
+                except s3_client.exceptions.ClientError as e:
+                    error_code = e.response.get('Error', {}).get('Code', '')
+                    if error_code == '404':
+                        results["evidence"].append(f"S3 bucket '{bucket_name}' exists but is not claimed")
+                    elif error_code == '403':
+                        results["evidence"].append(f"S3 bucket '{bucket_name}' exists and is claimed")
+            
+            # Check CloudFront
+            cloudfront_client = session.client('cloudfront')
+            if '.cloudfront.net' in domain:
+                distribution_id = domain.split('.cloudfront.net')[0]
+                try:
+                    cloudfront_client.get_distribution(Id=distribution_id)
+                except cloudfront_client.exceptions.NoSuchDistribution:
+                    results["evidence"].append(f"CloudFront distribution '{distribution_id}' is available")
+            
+        except Exception as e:
+            results["errors"].append(f"AWS check error: {str(e)}")
+    
+    def _check_azure(self, domain: str, results: Dict) -> None:
+        """Check Azure-specific takeover possibilities"""
+        try:
+            # Check Azure Storage
+            if '.blob.core.windows.net' in domain:
+                storage_account = domain.split('.blob.core.windows.net')[0]
+                url = f"https://{storage_account}.blob.core.windows.net"
+                response = requests.head(url, timeout=10)
+                if response.status_code == 404:
+                    results["evidence"].append(f"Azure Storage account '{storage_account}' may be available")
+            
+            # Check Azure Web Apps
+            if '.azurewebsites.net' in domain:
+                webapp_name = domain.split('.azurewebsites.net')[0]
+                url = f"https://{webapp_name}.azurewebsites.net"
+                response = requests.head(url, timeout=10)
+                if response.status_code == 404:
+                    results["evidence"].append(f"Azure Web App '{webapp_name}' may be available")
+            
+        except Exception as e:
+            results["errors"].append(f"Azure check error: {str(e)}")
+    
+    def _check_gcp(self, domain: str, results: Dict) -> None:
+        """Check GCP-specific takeover possibilities"""
+        try:
+            # Check Google Cloud Storage
+            if '.storage.googleapis.com' in domain:
+                bucket_name = domain.split('.storage.googleapis.com')[0]
+                url = f"https://storage.googleapis.com/{bucket_name}"
+                response = requests.head(url, timeout=10)
+                if response.status_code == 404:
+                    results["evidence"].append(f"GCP Storage bucket '{bucket_name}' may be available")
+            
+            # Check App Engine
+            if '.appspot.com' in domain:
+                app_name = domain.split('.appspot.com')[0]
+                url = f"https://{app_name}.appspot.com"
+                response = requests.head(url, timeout=10)
+                if response.status_code == 404:
+                    results["evidence"].append(f"App Engine app '{app_name}' may be available")
+            
+        except Exception as e:
+            results["errors"].append(f"GCP check error: {str(e)}")
 
 def main():
+    """Main entry point"""
     tool = CloudTakeoverDetector()
-    return tool.main()
+    tool.run()
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n[!] Operation interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n[!] Error: {str(e)}")
-        sys.exit(1) 
+    main() 

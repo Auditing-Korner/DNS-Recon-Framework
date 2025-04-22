@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+"""
+Domain Seizure Detector
+
+Detects law enforcement domain seizures:
+- DNS record analysis
+- WHOIS changes detection
+- HTTP evidence collection
+- Multi-threaded scanning
+"""
 
 import argparse
 import json
@@ -8,7 +17,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from rich.logging import RichHandler
@@ -18,10 +27,10 @@ from rich.text import Text
 from rich import box
 
 try:
-    from .base_tool import BaseTool, ToolResult
+    from .framework_tool_template import FrameworkTool, ToolResult
 except ImportError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tools.base_tool import BaseTool, ToolResult
+    from tools.framework_tool_template import FrameworkTool, ToolResult
 
 # Initialize rich console
 console = Console()
@@ -115,11 +124,13 @@ class SeizureResult:
     dns_changes: Dict
     http_evidence: Dict
 
-class SeizureDetector(BaseTool):
+class SeizureDetector(FrameworkTool):
+    """Law Enforcement Domain Seizure Detection Tool"""
+    
     def __init__(self):
         super().__init__(
-            name="seizure_detector",
-            description="Law Enforcement Domain Seizure Detector"
+            name="seizure-detector",
+            description="Law Enforcement Domain Seizure Detection Tool"
         )
         self.results = []
         
@@ -130,289 +141,365 @@ class SeizureDetector(BaseTool):
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
-
-    def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
-        """Set up argument parsing for the tool"""
-        super().setup_argparse(parser)
-        parser.add_argument("domains", nargs="+", help="Domain(s) to check")
-        parser.add_argument("--threads", "-t", type=int, default=10,
-                          help="Number of concurrent threads")
-        parser.add_argument("--html", action="store_true",
-                          help="Generate HTML report")
-
-    def check_dependencies(self) -> Tuple[bool, Optional[str]]:
-        """Check if all required dependencies are available"""
-        if MISSING_DEPS:
-            return False, f"Missing required dependencies: {', '.join(MISSING_DEPS)}"
-        return True, None
-
-    def run(self, args: argparse.Namespace) -> ToolResult:
-        """Run the seizure detection analysis"""
-        tool_result = ToolResult(
-            success=True,
-            tool_name=self.name,
-            findings=[],
-            metadata={"domains_analyzed": args.domains}
-        )
-
-        # Set framework mode flag if specified
-        self.framework_mode = args.framework_mode if hasattr(args, 'framework_mode') else False
-
+    
+    def setup_tool_arguments(self, parser: Union[argparse.ArgumentParser, argparse._ArgumentGroup]) -> None:
+        """Set up tool-specific arguments"""
+        parser.add_argument('domain', help='Domain to analyze')
+        parser.add_argument('--threads', type=int, default=10,
+                          help='Number of concurrent threads')
+        parser.add_argument('--check-whois', action='store_true',
+                          help='Check WHOIS record changes')
+        parser.add_argument('--check-dns', action='store_true',
+                          help='Check DNS record changes')
+        parser.add_argument('--check-http', action='store_true',
+                          help='Check HTTP evidence')
+        parser.add_argument('--check-all', action='store_true',
+                          help='Run all checks')
+        parser.add_argument('--html-report', action='store_true',
+                          help='Generate HTML report')
+    
+    def execute_tool(self, args: argparse.Namespace, result: ToolResult) -> None:
+        """Execute seizure detection analysis"""
         try:
-            if len(args.domains) == 1:
-                result = self.analyze_domain(args.domains[0])
-                self._add_result_to_tool_result(result, tool_result)
-            else:
-                results = self.scan_domains(args.domains, args.threads)
-                for result in results:
-                    self._add_result_to_tool_result(result, tool_result)
-
-            return tool_result
-
+            # Check dependencies
+            deps_ok, error_msg = check_dependencies()
+            if not deps_ok:
+                result.add_error(error_msg)
+                return
+            
+            # Update metadata
+            result.metadata.update({
+                "domain": args.domain,
+                "timestamp": datetime.now().isoformat(),
+                "checks": {
+                    "whois": args.check_all or args.check_whois,
+                    "dns": args.check_all or args.check_dns,
+                    "http": args.check_all or args.check_http
+                }
+            })
+            
+            # Only show banner in non-framework mode
+            if not self.is_framework_mode():
+                print_banner()
+            
+            # Analyze domain
+            seizure_result = self.analyze_domain(args.domain, args)
+            
+            # Add findings based on analysis
+            if seizure_result.is_seized:
+                self.add_common_finding(
+                    result,
+                    title=f"Domain Seizure Detected: {seizure_result.domain}",
+                    description=f"Domain appears to be seized by {seizure_result.agency}" if seizure_result.agency else "Domain appears to be seized by law enforcement",
+                    risk_level="Critical",
+                    evidence="\n".join(seizure_result.evidence)
+                )
+            
+            # Add WHOIS findings
+            if seizure_result.whois_changes:
+                for change in seizure_result.whois_changes.get("changes", []):
+                    self.add_common_finding(
+                        result,
+                        title=f"WHOIS Change Detected: {change.get('field', 'Unknown')}",
+                        description=f"WHOIS record change detected for {seizure_result.domain}",
+                        risk_level="Medium",
+                        evidence=f"Old: {change.get('old', 'N/A')}\nNew: {change.get('new', 'N/A')}"
+                    )
+            
+            # Add DNS findings
+            if seizure_result.dns_changes:
+                for record_type, changes in seizure_result.dns_changes.items():
+                    if changes.get("suspicious", False):
+                        self.add_common_finding(
+                            result,
+                            title=f"Suspicious DNS Change: {record_type}",
+                            description=f"Suspicious DNS record change detected for {seizure_result.domain}",
+                            risk_level="High",
+                            evidence=f"Current Records: {changes.get('current', [])}\nKnown Seizure IPs: {changes.get('seizure_ips', [])}"
+                        )
+            
+            # Add HTTP findings
+            if seizure_result.http_evidence:
+                if seizure_result.http_evidence.get("seizure_page", False):
+                    self.add_common_finding(
+                        result,
+                        title="Seizure Notice Page Detected",
+                        description=f"Law enforcement seizure notice page detected for {seizure_result.domain}",
+                        risk_level="Critical",
+                        evidence=seizure_result.http_evidence.get("evidence", "No specific evidence")
+                    )
+            
+            # Generate HTML report if requested
+            if args.html_report and self.get_output_file():
+                html_report = self.generate_html_report([seizure_result])
+                report_path = Path(self.get_output_file()).parent / f"{seizure_result.domain}_seizure_report.html"
+                try:
+                    with open(report_path, 'w', encoding='utf-8') as f:
+                        f.write(html_report)
+                    result.metadata["html_report"] = str(report_path)
+                except Exception as e:
+                    result.add_error(f"Error writing HTML report: {str(e)}")
+            
+            # Set success status
+            result.success = True
+            
         except Exception as e:
-            tool_result.success = False
-            tool_result.add_error(f"Error during seizure detection: {str(e)}")
-            return tool_result
-
-    def _add_result_to_tool_result(self, seizure_result: SeizureResult, tool_result: ToolResult):
-        """Add a SeizureResult to the ToolResult"""
-        if seizure_result.is_seized:
-            title = f"Domain Seizure Detected: {seizure_result.domain}"
-            description = f"Domain appears to be seized by {seizure_result.agency}" if seizure_result.agency else "Domain appears to be seized by law enforcement"
-            evidence = "\n".join(seizure_result.evidence)
-            tool_result.add_finding(title, description, seizure_result.risk_level, evidence)
+            result.success = False
+            result.add_error(f"Error during seizure detection: {str(e)}")
+            if not self.is_framework_mode():
+                logger.error(f"Error: {str(e)}")
+    
+    def analyze_domain(self, domain: str, args: argparse.Namespace) -> SeizureResult:
+        """Analyze a domain for seizure evidence"""
+        whois_changes = {}
+        dns_changes = {}
+        http_evidence = {}
+        evidence = []
         
-        # Add any errors or warnings from the analysis
-        if seizure_result.http_evidence.get("errors"):
-            for error in seizure_result.http_evidence["errors"]:
-                tool_result.add_warning(f"HTTP analysis error for {seizure_result.domain}: {error}")
-        
-        if seizure_result.dns_changes.get("errors"):
-            for error in seizure_result.dns_changes["errors"]:
-                tool_result.add_warning(f"DNS analysis error for {seizure_result.domain}: {error}")
-
-    def _handle_error(self, error_type: str, domain: str, error: Exception) -> Dict:
-        """Unified error handling"""
-        error_msg = f"Error during {error_type} check for {domain}: {str(error)}"
-        self.log_message('warning', error_msg)
-        self.errors.append({
-            "type": error_type,
-            "domain": domain,
-            "error": str(error),
-            "timestamp": datetime.now().isoformat()
-        })
-        return {"error": str(error), "error_type": error_type}
-
-    def _load_signatures(self) -> Dict:
-        """Load seizure signatures from the signatures database"""
-        signatures_file = Path(__file__).parent / "data" / "seizure_signatures.json"
         try:
-            with open(signatures_file, "r") as f:
-                return json.load(f)
+            # Run selected checks
+            if args.check_all or args.check_whois:
+                whois_changes = self.check_whois_changes(domain)
+                if whois_changes.get("evidence"):
+                    evidence.extend(whois_changes["evidence"])
+            
+            if args.check_all or args.check_dns:
+                dns_changes = self.check_dns_records(domain)
+                if dns_changes.get("evidence"):
+                    evidence.extend(dns_changes["evidence"])
+            
+            if args.check_all or args.check_http:
+                http_evidence = self.check_http_evidence(domain)
+                if http_evidence.get("evidence"):
+                    evidence.extend(http_evidence["evidence"])
+            
+            # Determine if domain is seized
+            is_seized = bool(evidence)
+            agency = self._determine_agency(evidence) if is_seized else None
+            risk_level = "Critical" if is_seized else "Info"
+            
+            return SeizureResult(
+                domain=domain,
+                is_seized=is_seized,
+                agency=agency,
+                evidence=evidence,
+                risk_level=risk_level,
+                timestamp=datetime.now().isoformat(),
+                whois_changes=whois_changes,
+                dns_changes=dns_changes,
+                http_evidence=http_evidence
+            )
+            
         except Exception as e:
-            logging.error(f"Failed to load signatures: {e}")
-            return {}
-
-    def log_message(self, level: str, message: str):
-        """Unified logging that respects framework mode"""
-        if self.framework_mode:
-            # In framework mode, collect messages
-            if not hasattr(self, 'messages'):
-                self.messages = []
-            self.messages.append({"level": level, "message": message})
-        else:
-            # In standalone mode, use logger
-            if level == 'info':
-                logger.info(message)
-            elif level == 'warning':
-                logger.warning(message)
-            elif level == 'error':
-                logger.error(message)
-
+            logger.error(f"Error analyzing domain {domain}: {str(e)}")
+            return SeizureResult(
+                domain=domain,
+                is_seized=False,
+                agency=None,
+                evidence=[f"Error during analysis: {str(e)}"],
+                risk_level="Error",
+                timestamp=datetime.now().isoformat(),
+                whois_changes={},
+                dns_changes={},
+                http_evidence={}
+            )
+    
     def check_whois_changes(self, domain: str) -> Dict:
-        """Check for suspicious WHOIS changes"""
+        """Check for suspicious WHOIS record changes"""
         try:
             w = whois.whois(domain)
-            changes = {
-                "registrar": w.registrar,
-                "creation_date": w.creation_date,
-                "updated_date": w.updated_date,
-                "expiration_date": w.expiration_date,
-                "name_servers": w.name_servers,
-                "status": w.status,
-                "errors": []
-            }
-            return changes
+            changes = []
+            evidence = []
+            
+            # Check for law enforcement registrars
+            if w.registrar and any(org.lower() in w.registrar.lower() 
+                                 for org in self.signatures.get("registrars", [])):
+                changes.append({
+                    "field": "registrar",
+                    "old": "Unknown",
+                    "new": w.registrar,
+                    "date": str(w.updated_date)
+                })
+                evidence.append(f"Domain registered with known law enforcement registrar: {w.registrar}")
+            
+            return {"changes": changes, "evidence": evidence}
+            
         except Exception as e:
-            return self._handle_error("WHOIS", domain, e)
-
+            return {"error": str(e)}
+    
     def check_dns_records(self, domain: str) -> Dict:
-        """Check for DNS record changes indicating seizure"""
-        changes = {"records": {}, "errors": []}
-        
-        for record_type in ["A", "AAAA", "NS", "MX", "TXT"]:
+        """Check for suspicious DNS record changes"""
+        try:
+            resolver = dns.resolver.Resolver()
+            changes = []
+            evidence = []
+            
+            # Check A records
             try:
-                resolver = dns.resolver.Resolver()
-                answers = resolver.resolve(domain, record_type)
-                changes["records"][record_type] = [str(rdata) for rdata in answers]
-            except Exception as e:
-                changes["errors"].append(f"{record_type} lookup failed: {str(e)}")
-        
-        return changes
-
+                answers = resolver.resolve(domain, 'A')
+                for rdata in answers:
+                    ip = str(rdata)
+                    if any(ip.startswith(prefix) for prefix in self.signatures.get("ip_ranges", [])):
+                        changes.append({
+                            "type": "A",
+                            "description": f"IP address {ip} matches known law enforcement range",
+                            "evidence": f"IP: {ip}"
+                        })
+                        evidence.append(f"Domain resolves to known law enforcement IP: {ip}")
+            except:
+                pass
+            
+            return {"changes": changes, "evidence": evidence}
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
     def check_http_evidence(self, domain: str) -> Dict:
-        """Check for HTTP evidence of seizure"""
-        evidence = {
-            "title": None,
-            "content": None,
-            "status_code": None,
-            "server": None,
-            "redirect_url": None,
-            "errors": []
+        """Check for seizure notice on website"""
+        try:
+            evidence = []
+            
+            # Try both HTTP and HTTPS
+            for protocol in ['https', 'http']:
+                try:
+                    url = f"{protocol}://{domain}"
+                    response = requests.get(url, headers=self.headers, verify=False, timeout=10)
+                    
+                    # Check for seizure notice keywords
+                    content = response.text.lower()
+                    for keyword in self.signatures.get("keywords", []):
+                        if keyword.lower() in content:
+                            evidence.append({
+                                "description": f"Found seizure keyword: {keyword}",
+                                "risk_level": "High",
+                                "details": f"Found in {url}"
+                            })
+                    
+                    # Check for seizure notice images
+                    for image in self.signatures.get("images", []):
+                        if image.lower() in content:
+                            evidence.append({
+                                "description": f"Found seizure notice image: {image}",
+                                "risk_level": "Critical",
+                                "details": f"Found in {url}"
+                            })
+                    
+                    break  # Stop if successful
+                except:
+                    continue
+            
+            return {"evidence": evidence}
+            
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def _load_signatures(self) -> Dict:
+        """Load seizure signatures from configuration"""
+        try:
+            signature_file = Path(__file__).parent / "data" / "seizure_signatures.json"
+            if signature_file.exists():
+                with open(signature_file) as f:
+                    return json.load(f)
+        except:
+            pass
+        
+        # Default signatures if file not found
+        return {
+            "registrars": [
+                "US Department of Justice",
+                "Europol",
+                "FBI",
+                "ICE"
+            ],
+            "ip_ranges": [
+                "159.46.",
+                "192.168.1."  # Example range
+            ],
+            "keywords": [
+                "seized",
+                "forfeited",
+                "law enforcement",
+                "federal bureau of investigation",
+                "europol"
+            ],
+            "images": [
+                "seized_banner.jpg",
+                "doj_seal.png",
+                "fbi_seal.png"
+            ]
         }
-
-        urls = [f"http://{domain}", f"https://{domain}"]
+    
+    def _determine_agency(self, evidence: List[str]) -> Optional[str]:
+        """Determine which agency seized the domain based on evidence"""
+        evidence_text = " ".join(evidence).lower()
         
-        for url in urls:
-            try:
-                response = requests.get(url, headers=self.headers, verify=False, timeout=10)
-                evidence["status_code"] = response.status_code
-                evidence["server"] = response.headers.get("Server")
-                
-                if response.history:
-                    evidence["redirect_url"] = response.url
-                
-                # Extract title and check content
-                content = response.text.lower()
-                title_match = re.search(r"<title>(.*?)</title>", content)
-                if title_match:
-                    evidence["title"] = title_match.group(1)
-                evidence["content"] = content
-                
-                break  # Stop if we get a successful response
-            except Exception as e:
-                evidence["errors"].append(f"HTTP request failed for {url}: {str(e)}")
+        if "fbi" in evidence_text or "federal bureau" in evidence_text:
+            return "FBI"
+        elif "ice" in evidence_text or "homeland" in evidence_text:
+            return "ICE/HSI"
+        elif "europol" in evidence_text:
+            return "Europol"
+        elif "justice" in evidence_text or "doj" in evidence_text:
+            return "Department of Justice"
         
-        return evidence
-
-    def analyze_domain(self, domain: str) -> SeizureResult:
-        """Analyze a single domain for signs of seizure"""
-        whois_changes = self.check_whois_changes(domain)
-        dns_changes = self.check_dns_records(domain)
-        http_evidence = self.check_http_evidence(domain)
-        
-        is_seized = False
-        agency = None
-        evidence = []
-        risk_level = "info"
-        
-        # Check for seizure evidence
-        if http_evidence.get("content"):
-            content = http_evidence["content"]
-            title = http_evidence.get("title", "").lower()
-            
-            for sig in self.signatures.get("content_signatures", []):
-                if sig["pattern"].lower() in content:
-                    is_seized = True
-                    agency = sig.get("agency")
-                    evidence.append(f"Content match: {sig['pattern']}")
-                    risk_level = sig.get("risk_level", "high")
-            
-            for sig in self.signatures.get("title_signatures", []):
-                if sig["pattern"].lower() in title:
-                    is_seized = True
-                    agency = sig.get("agency")
-                    evidence.append(f"Title match: {sig['pattern']}")
-                    risk_level = sig.get("risk_level", "high")
-        
-        # Check DNS patterns
-        for record_type, records in dns_changes.get("records", {}).items():
-            for record in records:
-                for sig in self.signatures.get("dns_signatures", []):
-                    if sig["pattern"].lower() in record.lower():
-                        is_seized = True
-                        agency = sig.get("agency")
-                        evidence.append(f"DNS {record_type} match: {sig['pattern']}")
-                        risk_level = sig.get("risk_level", "high")
-        
-        return SeizureResult(
-            domain=domain,
-            is_seized=is_seized,
-            agency=agency,
-            evidence=evidence,
-            risk_level=risk_level,
-            timestamp=datetime.now().isoformat(),
-            whois_changes=whois_changes,
-            dns_changes=dns_changes,
-            http_evidence=http_evidence
-        )
-
-    def scan_domains(self, domains: List[str], threads: int = 10) -> List[SeizureResult]:
-        """Scan multiple domains concurrently"""
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            return list(executor.map(self.analyze_domain, domains))
-
+        return None
+    
     def generate_html_report(self, results: List[SeizureResult]) -> str:
-        """Generate an HTML report from the results"""
+        """Generate an HTML report of seizure analysis results"""
         html = """
+        <!DOCTYPE html>
         <html>
         <head>
             <title>Domain Seizure Analysis Report</title>
             <style>
                 body { font-family: Arial, sans-serif; margin: 20px; }
-                .domain { margin-bottom: 20px; padding: 10px; border: 1px solid #ccc; }
-                .seized { background-color: #ffebee; }
+                .seized { color: red; }
+                .clean { color: green; }
                 .evidence { margin-left: 20px; }
-                .error { color: red; }
-                .warning { color: orange; }
             </style>
         </head>
         <body>
             <h1>Domain Seizure Analysis Report</h1>
-            <p>Generated: {timestamp}</p>
-        """.format(timestamp=datetime.now().isoformat())
-
+            <p>Generated: {date}</p>
+        """.format(date=datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        
         for result in results:
-            html += """
-            <div class="domain{seized}">
-                <h2>{domain}</h2>
-                <p>Status: {status}</p>
-                {agency}
-                {evidence}
-                <h3>WHOIS Changes</h3>
-                <pre>{whois}</pre>
-                <h3>DNS Changes</h3>
-                <pre>{dns}</pre>
-                <h3>HTTP Evidence</h3>
-                <pre>{http}</pre>
-            </div>
-            """.format(
-                seized=" seized" if result.is_seized else "",
-                domain=result.domain,
-                status="SEIZED" if result.is_seized else "No seizure detected",
-                agency=f"<p>Seizing Agency: {result.agency}</p>" if result.agency else "",
-                evidence="\n".join(f"<p class='evidence'>{e}</p>" for e in result.evidence),
-                whois=json.dumps(result.whois_changes, indent=2),
-                dns=json.dumps(result.dns_changes, indent=2),
-                http=json.dumps(result.http_evidence, indent=2)
-            )
-
+            status_class = "seized" if result.is_seized else "clean"
+            status_text = "SEIZED" if result.is_seized else "CLEAN"
+            
+            html += f"""
+            <div class="domain">
+                <h2>Domain: {result.domain}</h2>
+                <p>Status: <span class="{status_class}">{status_text}</span></p>
+            """
+            
+            if result.is_seized:
+                html += f"""
+                <p>Seizing Agency: {result.agency or 'Unknown'}</p>
+                <h3>Evidence:</h3>
+                <ul class="evidence">
+                """
+                for item in result.evidence:
+                    html += f"<li>{item}</li>"
+                html += "</ul>"
+            
+            html += "</div>"
+        
         html += """
         </body>
         </html>
         """
+        
         return html
 
 def main():
+    """Main entry point for the tool"""
     tool = SeizureDetector()
-    return tool.main()
+    parser = argparse.ArgumentParser(description=tool.description)
+    tool.setup_argparse(parser)
+    args = parser.parse_args()
+    result = tool.run(args)
+    sys.exit(0 if result.success else 1)
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n[!] Operation interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n[!] Error: {str(e)}")
-        sys.exit(1) 
+    main() 

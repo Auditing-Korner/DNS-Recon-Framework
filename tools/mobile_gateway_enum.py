@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+"""
+Mobile Gateway Enumerator
+
+Enumerates and tests 3GPP mobile network gateways:
+- GGSN/P-GW/S-GW detection
+- Protocol testing (GTP, Diameter)
+- Vulnerability scanning
+- Multi-threaded scanning
+"""
 
 import argparse
 import json
@@ -30,10 +39,10 @@ import struct
 
 # Handle imports for framework integration
 try:
-    from .base_tool import BaseTool, ToolResult
+    from .framework_tool_template import FrameworkTool, ToolResult
 except ImportError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tools.base_tool import BaseTool, ToolResult
+    from tools.framework_tool_template import FrameworkTool, ToolResult
 
 # Suppress SSL warnings
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
@@ -65,12 +74,15 @@ class GatewayResult:
             'evidence': self.evidence
         }
 
-class MobileGatewayEnumerator(BaseTool):
+class MobileGatewayEnumerator(FrameworkTool):
+    """Mobile Gateway Enumeration Tool"""
+    
     def __init__(self):
         super().__init__(
             name="mobile-gw", 
             description="Enumerate 3GPP Mobile Gateways"
         )
+        # Initialize scan configuration
         self.target = None
         self.threads = 10
         self.gateway_type = None
@@ -100,7 +112,7 @@ class MobileGatewayEnumerator(BaseTool):
         # Load signature database
         self.signatures = self._load_signatures()
         
-        # Common ports for mobile gateways - will be overridden by config
+        # Common ports for mobile gateways
         self.common_ports = {
             'GGSN': [2123, 2152, 3386],  # GTP-C, GTP-U, GTP'
             'P-GW': [2123, 2152, 8080],  # GTP-C, GTP-U, REST
@@ -110,130 +122,120 @@ class MobileGatewayEnumerator(BaseTool):
             'HSS': [3868, 3869],         # Diameter
             'PCRF': [3868, 8080]         # Diameter, REST
         }
-
-    def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
-        """Set up argument parsing for the tool"""
-        super().setup_argparse(parser)
+    
+    def setup_tool_arguments(self, parser: Union[argparse.ArgumentParser, argparse._ArgumentGroup]) -> None:
+        """Set up tool-specific arguments"""
+        # Add framework integration arguments first
+        super().setup_tool_arguments(parser)
         
+        # Add tool-specific arguments
         parser.add_argument("target", help="Target IP, range (x.x.x.x-y.y.y.y), or CIDR")
-        parser.add_argument("--gateway-type", "-g", choices=["GGSN", "P-GW", "S-GW", "MME", "SGSN", "HSS", "PCRF", "all"],
+        parser.add_argument("--gateway-type", choices=["GGSN", "P-GW", "S-GW", "MME", "SGSN", "HSS", "PCRF", "all"],
                           default="all", help="Specific gateway type to test")
-        parser.add_argument("--ports", "-p", help="Comma-separated list of specific ports to scan")
-        parser.add_argument("--threads", "-t", type=int, default=10, 
+        parser.add_argument("--ports", help="Comma-separated list of specific ports to scan")
+        parser.add_argument("--threads", type=int, default=10, 
                           help="Number of concurrent threads")
         parser.add_argument("--timeout", type=int, default=5,
                           help="Scan timeout in seconds")
         parser.add_argument("--no-protocol-tests", action="store_true",
                           help="Skip protocol-specific tests")
-
-    def run(self, args: argparse.Namespace) -> ToolResult:
-        """Run the tool with the given arguments"""
-        # Store arguments
-        self.target = args.target
-        self.threads = args.threads
-        self.gateway_type = args.gateway_type
-        self.scan_timeout = args.timeout
-        self.protocol_tests = not args.no_protocol_tests
-        
-        # Parse ports if specified
-        if args.ports:
-            try:
-                self.port_list = [int(p) for p in args.ports.split(',')]
-            except ValueError:
-                self.logger.error("Invalid port specification. Use comma-separated list of port numbers.")
-                return self._create_error_result("Invalid port specification")
-        
-        # Load configuration if available
-        self._load_config_from_framework()
-        
-        # Run the scan
+    
+    def execute_tool(self, args: argparse.Namespace, result: ToolResult) -> None:
+        """Execute the mobile gateway enumeration"""
         try:
+            # Store configuration
+            self.target = args.target
+            self.threads = args.threads
+            self.gateway_type = args.gateway_type
+            self.scan_timeout = args.timeout
+            self.protocol_tests = not args.no_protocol_tests
+            
+            # Parse ports if specified
+            if args.ports:
+                try:
+                    self.port_list = [int(p) for p in args.ports.split(',')]
+                except ValueError:
+                    result.add_error("Invalid port specification. Use comma-separated list of port numbers.")
+                    return
+            
+            # Update metadata
+            result.metadata.update({
+                "target": self.target,
+                "gateway_type": self.gateway_type,
+                "threads": self.threads,
+                "timeout": self.scan_timeout,
+                "protocol_tests": self.protocol_tests,
+                "ports": self.port_list if self.port_list else "default",
+                "timestamp": datetime.now().isoformat()
+            })
+            
+            # Display banner if not in framework mode
+            if not self.framework_mode:
+                self._print_banner()
+            
+            # Run the scan
             gateway_results = self.scan_network(self.target, self.threads)
             
-            # Create tool result
-            tool_result = ToolResult(
-                success=True,
-                tool_name=self.name,
-                findings=[],
-                metadata={
-                    "scan_date": datetime.now().isoformat(),
-                    "target": self.target,
-                    "gateway_type": self.gateway_type
-                }
-            )
-            
-            # Add findings based on results
-            for result in gateway_results:
-                if result.gateway_type != "Unknown":
-                    # Add finding for each gateway
-                    tool_result.add_finding(
-                        title=f"{result.gateway_type} Gateway Detected",
-                        description=f"Mobile gateway detected at {result.ip_address} ({result.hostname or 'Unknown hostname'})",
-                        risk_level=result.risk_level,
-                        evidence="\n".join(result.evidence)
+            # Process results
+            for gateway in gateway_results:
+                if gateway.gateway_type != "Unknown":
+                    # Add gateway finding
+                    finding_title = f"{gateway.gateway_type} Gateway Detected"
+                    finding_desc = (f"Mobile gateway detected at {gateway.ip_address}" +
+                                 (f" ({gateway.hostname})" if gateway.hostname else ""))
+                    finding_evidence = "\n".join([
+                        f"Type: {gateway.gateway_type}",
+                        f"Protocols: {', '.join(gateway.protocols)}",
+                        f"Open Ports: {', '.join(map(str, gateway.ports))}",
+                        *gateway.evidence
+                    ])
+                    
+                    self.add_common_finding(
+                        result,
+                        title=finding_title,
+                        description=finding_desc,
+                        risk_level=gateway.risk_level,
+                        evidence=finding_evidence
                     )
                     
-                    # Add findings for each vulnerability
-                    for vuln in result.vulnerabilities:
-                        tool_result.add_finding(
+                    # Add vulnerability findings
+                    for vuln in gateway.vulnerabilities:
+                        self.add_common_finding(
+                            result,
                             title=vuln.get('name', 'Vulnerability'),
                             description=vuln.get('description', 'No description'),
                             risk_level=vuln.get('risk', 'Low'),
                             evidence=vuln.get('evidence', 'No evidence')
                         )
             
-            # Update raw output
-            tool_result.raw_output = self.scan_results
+            # Add scan summary to metadata
+            self.scan_results['scan_summary']['timestamp'] = datetime.now().isoformat()
+            result.metadata['scan_summary'] = self.scan_results['scan_summary']
             
-            return tool_result
-        
+            # Set success status
+            result.success = True
+            
         except Exception as e:
-            self.logger.error(f"Error during execution: {str(e)}")
-            return self._create_error_result(str(e))
+            result.success = False
+            result.add_error(f"Error during gateway enumeration: {str(e)}")
+            if not self.framework_mode:
+                self.logger.error(f"Error: {str(e)}")
 
-    def _create_error_result(self, error_message: str) -> ToolResult:
-        """Create an error result"""
-        result = ToolResult(
-            success=False,
-            tool_name=self.name,
-            findings=[]
+    def _print_banner(self):
+        """Print tool banner when running in standalone mode"""
+        banner = Panel(
+            "[bold cyan]Mobile Gateway Enumerator[/bold cyan]\n" +
+            "[blue]3GPP Gateway Detection and Testing Tool[/blue]\n\n" +
+            "[yellow]Features:[/yellow]\n" +
+            "• GGSN/P-GW/S-GW Detection\n" +
+            "• Protocol Testing (GTP, Diameter)\n" +
+            "• Vulnerability Scanning\n" +
+            "• Multi-threaded Scanning",
+            title="[white]RFS DNS Framework[/white]",
+            border_style="blue"
         )
-        result.add_error(error_message)
-        return result
-
-    def _load_config_from_framework(self):
-        """Load configuration from framework config"""
-        try:
-            from config_manager import ConfigManager
-            config = ConfigManager()
-            
-            # Load mobile gateway configuration
-            mobile_gw_config = config.get("tools", {}).get("mobile_gw", {})
-            
-            # Update ports configuration if available
-            if "ports" in mobile_gw_config:
-                self.common_ports = mobile_gw_config["ports"]
-            
-            # Update scan timeout
-            if "scan_timeout" in mobile_gw_config:
-                self.scan_timeout = mobile_gw_config["scan_timeout"]
-            
-            # Update protocol tests setting
-            if "protocol_tests" in mobile_gw_config:
-                self.protocol_tests = mobile_gw_config["protocol_tests"]
-                
-            self.logger.info("Loaded configuration from framework")
-            
-        except ImportError:
-            self.logger.warning("Could not load framework configuration, using defaults")
-        except Exception as e:
-            self.logger.warning(f"Error loading configuration: {str(e)}")
-
-    def check_dependencies(self):
-        """Check if all required dependencies are available"""
-        if not SCAPY_AVAILABLE:
-            return False, "Scapy is required for GTP packet crafting but not available"
-        return True, None
+        Console().print(banner)
+        print()
 
     def _load_signatures(self) -> Dict:
         """Load gateway signatures and detection patterns"""
@@ -648,8 +650,13 @@ class MobileGatewayEnumerator(BaseTool):
         return [socket.inet_ntoa(struct.pack('>I', i)) for i in range(start, end + 1)]
 
 def main():
+    """Main entry point for the tool"""
     tool = MobileGatewayEnumerator()
-    return tool.main()
+    parser = argparse.ArgumentParser(description=tool.description)
+    tool.setup_argparse(parser)
+    args = parser.parse_args()
+    result = tool.run(args)
+    sys.exit(0 if result.success else 1)
 
 if __name__ == "__main__":
     main() 

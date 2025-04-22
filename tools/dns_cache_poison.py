@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""
+DNS Cache Poisoning Detection and Testing Tool
+
+Tests DNS servers for cache poisoning vulnerabilities and can attempt cache poisoning attacks
+for authorized security testing.
+"""
 
 import socket
 import sys
@@ -12,15 +18,15 @@ import os
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 import signal
 
 # Handle imports for framework integration
 try:
-    from .base_tool import BaseTool, ToolResult
+    from .framework_tool_template import FrameworkTool, ToolResult
 except ImportError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tools.base_tool import BaseTool, ToolResult
+    from tools.framework_tool_template import FrameworkTool, ToolResult
 
 # Check for scapy
 try:
@@ -45,13 +51,13 @@ def handle_interrupt(signum, frame):
 # Register signal handler
 signal.signal(signal.SIGINT, handle_interrupt)
 
-class DNSCachePoisonScanner(BaseTool):
+class DNSCachePoisonScanner(FrameworkTool):
     """DNS Cache Poisoning Detection and Testing Tool"""
     
     def __init__(self):
         super().__init__(
             name="cache-poison",
-            description="DNS cache poisoning detection"
+            description="DNS cache poisoning detection and testing tool"
         )
         self.target_domain = None
         self.nameserver = None
@@ -83,13 +89,15 @@ class DNSCachePoisonScanner(BaseTool):
             }
         }
 
-    def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
-        """Set up argument parsing for the tool"""
-        super().setup_argparse(parser)
+    def setup_tool_arguments(self, parser: Union[argparse.ArgumentParser, argparse._ArgumentGroup]) -> None:
+        """Set up tool-specific arguments"""
+        # Add framework integration arguments first
+        super().setup_tool_arguments(parser)
         
-        parser.add_argument('--target', required=True, help='Target domain to poison')
-        parser.add_argument('--nameserver', required=True, help='DNS server to attack')
-        parser.add_argument('--spoofed-ip', required=True, help='IP address to inject')
+        # Add tool-specific arguments
+        parser.add_argument('target', help='Target domain to poison')
+        parser.add_argument('nameserver', help='DNS server to attack')
+        parser.add_argument('spoofed_ip', help='IP address to inject')
         parser.add_argument('--record-type', choices=['A', 'AAAA', 'MX'], default='A',
                           help='DNS record type to poison')
         parser.add_argument('--mode', choices=['detect', 'poison', 'both'], 
@@ -107,8 +115,8 @@ class DNSCachePoisonScanner(BaseTool):
             return False, "Scapy is required for DNS packet manipulation"
         return True, None
 
-    def run(self, args: argparse.Namespace) -> ToolResult:
-        """Run the tool with the given arguments"""
+    def execute_tool(self, args: argparse.Namespace, result: ToolResult) -> None:
+        """Execute the tool with the given arguments"""
         # Store arguments
         self.target_domain = args.target
         self.nameserver = args.nameserver
@@ -119,31 +127,14 @@ class DNSCachePoisonScanner(BaseTool):
         self.max_attempts = args.max_attempts
         self.threads = args.threads
         
-        # Initialize scan results
-        self.scan_results = {
-            'status': 'initialized',
+        # Update metadata
+        result.metadata.update({
             'target_domain': self.target_domain,
             'nameserver': self.nameserver,
             'record_type': self.record_type,
-            'timestamp': datetime.now().isoformat(),
-            'vulnerability_checks': [],
-            'poisoning_attempts': [],
-            'success_rate': 0.0,
-            'summary': {
-                'is_vulnerable': False,
-                'vulnerabilities_found': [],
-                'successful_poisoning': False,
-                'risk_level': 'Unknown'
-            }
-        }
-        
-        # Create the tool result
-        result = ToolResult(
-            success=True,
-            tool_name=self.name,
-            findings=[],
-            metadata=self.scan_results
-        )
+            'mode': self.mode,
+            'timestamp': datetime.now().isoformat()
+        })
         
         # Display warning if not in framework mode
         if not self.framework_mode:
@@ -156,24 +147,24 @@ class DNSCachePoisonScanner(BaseTool):
         # Check permissions
         if not self._check_admin():
             error_msg = "This script requires administrator/root privileges"
-            self.logger.error(error_msg)
-            result.success = False
             result.add_error(error_msg)
-            return result
+            return
         
         try:
             # Run in appropriate mode
             if self.mode in ['detect', 'both']:
                 vulnerable, message = self.detect_vulnerability()
                 if vulnerable:
-                    result.add_finding(
+                    self.add_common_finding(
+                        result,
                         title=f"DNS Server {self.nameserver} Vulnerable to Cache Poisoning",
                         description=message,
                         risk_level="High",
                         evidence=json.dumps(self.scan_results['vulnerability_checks'], indent=2)
                     )
                 else:
-                    result.add_finding(
+                    self.add_common_finding(
+                        result,
                         title=f"DNS Server {self.nameserver} Not Vulnerable",
                         description=message,
                         risk_level="Info",
@@ -191,32 +182,27 @@ class DNSCachePoisonScanner(BaseTool):
                 )
                 
                 if poisoning_success:
-                    result.add_finding(
+                    self.add_common_finding(
+                        result,
                         title=f"DNS Cache Poisoning Successful on {self.nameserver}",
                         description=f"Successfully poisoned cache for {self.target_domain} with {self.spoofed_ip}",
                         risk_level="Critical",
                         evidence=json.dumps(self.scan_results['poisoning_attempts'], indent=2)
                     )
                 else:
-                    message = f"Failed to poison DNS cache for {self.target_domain} on {self.nameserver}"
-                    result.add_finding(
-                        title="DNS Cache Poisoning Failed",
-                        description=message,
+                    self.add_common_finding(
+                        result,
+                        title=f"DNS Cache Poisoning Failed on {self.nameserver}",
+                        description="Unable to poison DNS cache after multiple attempts",
                         risk_level="Info",
                         evidence=json.dumps(self.scan_results['poisoning_attempts'], indent=2)
                     )
             
-            # Update metadata with final results
-            result.metadata = self.scan_results
-            
-            return result
+            # Update final metadata
+            result.metadata['scan_summary'] = self.scan_results['summary']
             
         except Exception as e:
-            error_msg = f"Error during cache poisoning: {str(e)}"
-            self.logger.error(error_msg)
-            result.success = False
-            result.add_error(error_msg)
-            return result
+            result.add_error(f"Error during cache poisoning scan: {str(e)}")
 
     def _check_admin(self):
         """Check if the script has admin/root privileges"""

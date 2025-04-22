@@ -211,7 +211,19 @@ class RFSDNSFramework:
             # Create tool instance
             if hasattr(module, 'main'):
                 # Set up arguments
-                sys.argv = [tool_info['script']] + tool_args
+                args = [tool_info['script']]
+                
+                # Add domain argument if provided
+                if '--domain' in sys.argv:
+                    domain_index = sys.argv.index('--domain')
+                    if domain_index + 1 < len(sys.argv):
+                        args.append(sys.argv[domain_index + 1])
+                
+                # Add any additional tool arguments
+                args.extend(tool_args)
+                
+                # Set up sys.argv for the tool
+                sys.argv = args
                 
                 # Run the tool
                 result = module.main()
@@ -1077,9 +1089,27 @@ def main():
                 sys.exit(1)
             framework.run_workflow(args.domain, args.output_dir, args.report_format, args.force)
         elif args.tool:
-            if args.force:
-                args.tool_args.append('--force')
-            success = framework.run_tool(args.tool, args.tool_args, args.force)
+            # Prepare tool arguments
+            tool_args = []
+            
+            # Add domain if provided
+            if args.domain:
+                tool_args.append(args.domain)
+            
+            # Add output file if output directory is specified
+            if args.output_dir:
+                output_file = os.path.join(args.output_dir, f"{args.tool}_results.json")
+                tool_args.extend(['--output', output_file])
+            
+            # Add framework mode flag
+            tool_args.append('--framework-mode')
+            
+            # Add any additional tool arguments
+            if args.tool_args:
+                tool_args.extend(args.tool_args)
+            
+            # Run the tool
+            success = framework.run_tool(args.tool, tool_args, args.force)
             if not success:
                 sys.exit(1)
         else:

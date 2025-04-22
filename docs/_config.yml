@@ -1,38 +1,95 @@
-theme: jekyll-theme-cayman
+remote_theme: just-the-docs/just-the-docs
 title: RFS DNS Framework
 description: A comprehensive DNS security testing and analysis framework
 show_downloads: true
 google_analytics:
-markdown: kramdown
-kramdown:
-  input: GFM
-  syntax_highlighter: rouge
 
-# Navigation
+# Theme settings
+color_scheme: dark
+search_enabled: true
+heading_anchors: true
+aux_links:
+  "RFS DNS Framework on GitHub":
+    - "https://github.com/rfs85/RFS-DNS-Framework"
+
+# Navigation structure
 nav:
-  - title: Home
-    url: /
-  - title: Installation
-    url: /installation
-  - title: DNS Cache Poisoning
-    url: /dns-cache-poison
-  - title: Usage Guide
-    url: /usage
-  - title: API Reference
-    url: /api/
+  - title: Getting Started
+    children:
+      - title: Installation
+        url: /installation
+      - title: Quick Start
+        url: /quick-start
+      - title: Usage Guide
+        url: /usage
+  
+  - title: Core Tools
+    children:
+      - title: DNS Cache Poisoning
+        url: /tools/dns-cache-poison
+      - title: DNS Record Validator
+        url: /tools/dns-record-validator
+      - title: DNS Takeover Scanner
+        url: /tools/dns-takeover-scanner
+      - title: DNS Server Finder
+        url: /tools/dns-server-finder
+      - title: SSL Scanner
+        url: /tools/ssl-scanner
+      - title: Seizure Detector
+        url: /tools/seizure-detector
+  
+  - title: Additional Tools
+    children:
+      - title: Cloud Enumerator
+        url: /tools/cloud-enum
+      - title: TLD Bruteforcer
+        url: /tools/tld-brute
+      - title: Mobile Gateway Enum
+        url: /tools/mobile-gw
+  
+  - title: Advanced Topics
+    children:
+      - title: Framework Integration
+        url: /advanced/framework
+      - title: Custom Tools
+        url: /advanced/custom-tools
+      - title: API Reference
+        url: /api/
+  
   - title: Contributing
-    url: /contributing
-  - title: Security
-    url: /security
+    children:
+      - title: Guidelines
+        url: /contributing
+      - title: Security Policy
+        url: /security
 
-# Footer links
-footer_links:
-  - title: GitHub
+# Footer configuration
+footer_content: "Copyright &copy; 2024 RFS DNS Framework. Distributed under the MIT License."
+
+# Back to top link
+back_to_top: true
+back_to_top_text: "Back to top"
+
+# External navigation links
+nav_external_links:
+  - title: GitHub Repository
     url: https://github.com/rfs85/RFS-DNS-Framework
-  - title: Issues
+  - title: Report an Issue
     url: https://github.com/rfs85/RFS-DNS-Framework/issues
-  - title: License
-    url: https://github.com/rfs85/RFS-DNS-Framework/blob/main/LICENSE
+
+# Search settings
+search:
+  # Split pages into sections that can be searched individually
+  heading_level: 2
+  previews: 3
+  preview_words_before: 5
+  preview_words_after: 10
+  tokenizer_separator: /[\s/]+/
+  rel_url: true
+  button: true
+
+# Enable copy buttons on code blocks
+enable_copy_code_button: true
 
 # SEO
 plugins:

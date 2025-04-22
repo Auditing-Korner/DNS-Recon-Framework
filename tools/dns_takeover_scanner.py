@@ -12,7 +12,7 @@ import requests
 import re
 import concurrent.futures
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Set, Tuple
+from typing import Dict, List, Any, Optional, Set, Tuple, Union
 from dataclasses import dataclass
 import ipaddress
 from urllib.parse import urlparse
@@ -184,8 +184,10 @@ class DNSTakeoverScanner(BaseTool):
     
     def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
         """Set up argument parsing for the tool"""
+        # Add framework integration arguments first
         super().setup_argparse(parser)
         
+        # Add tool-specific arguments
         parser.add_argument("domain", help="Domain to scan for takeover vulnerabilities")
         parser.add_argument("--subdomains", "-s", 
                           help="File containing list of subdomains to check (one per line)")
@@ -198,61 +200,92 @@ class DNSTakeoverScanner(BaseTool):
         parser.add_argument("--verify-ssl", action="store_true",
                           help="Verify SSL certificates (default: False)")
         parser.add_argument("--custom-fingerprints",
-                          help="Path to custom fingerprints JSON file")
+                          help="JSON file containing custom fingerprints")
+        parser.add_argument("--output", "-o",
+                          help="Output file to write results to (JSON format)")
+        parser.add_argument("--framework-mode", action="store_true",
+                          help="Run in framework integration mode")
     
-    def run(self, args: argparse.Namespace) -> ToolResult:
-        """Run the tool with the given arguments"""
-        # Store arguments
-        self.domain = args.domain.lower()
-        self.include_subdomains = not args.no_subdomains
-        self.timeout = args.timeout
-        self.threads = args.threads
-        self.verify_ssl = args.verify_ssl
-        
-        # Try to load custom fingerprints if specified
-        if args.custom_fingerprints:
-            self._load_custom_fingerprints(args.custom_fingerprints)
-        
-        # Create result object
-        result = ToolResult(
-            success=True,
-            tool_name=self.name,
-            findings=[],
-            metadata={
-                "scan_date": datetime.now().isoformat(),
+    def setup_tool_arguments(self, parser: Union[argparse.ArgumentParser, argparse._ArgumentGroup]) -> None:
+        """Set up tool-specific arguments"""
+        parser.add_argument("domain", help="Domain to scan for takeover vulnerabilities")
+        parser.add_argument("--subdomains", "-s", 
+                          help="File containing list of subdomains to check (one per line)")
+        parser.add_argument("--no-subdomains", action="store_true",
+                          help="Don't automatically enumerate subdomains")
+        parser.add_argument("--timeout", "-t", type=int, default=5,
+                          help="Connection timeout in seconds (default: 5)")
+        parser.add_argument("--threads", type=int, default=20,
+                          help="Number of concurrent threads (default: 20)")
+        parser.add_argument("--verify-ssl", action="store_true",
+                          help="Verify SSL certificates (default: False)")
+        parser.add_argument("--custom-fingerprints",
+                          help="JSON file containing custom fingerprints")
+    
+    def execute_tool(self, args: argparse.Namespace, result: ToolResult) -> None:
+        """Execute the DNS takeover scanner"""
+        try:
+            # Initialize parameters
+            self.domain = args.domain
+            self.include_subdomains = not args.no_subdomains
+            self.timeout = args.timeout
+            self.threads = args.threads
+            self.verify_ssl = args.verify_ssl
+            
+            # Load custom fingerprints if provided
+            if args.custom_fingerprints:
+                self._load_custom_fingerprints(args.custom_fingerprints)
+            
+            # Load subdomains from file if provided
+            if args.subdomains:
+                self._load_subdomains_from_file(args.subdomains)
+            elif self.include_subdomains:
+                self._enumerate_subdomains()
+            else:
+                self.subdomains = [self.domain]
+            
+            # Run the scan
+            if not self.is_framework_mode():
+                print_banner()
+                console.print(f"[bold blue]Starting scan for domain:[/bold blue] {self.domain}")
+                console.print(f"[bold blue]Number of subdomains to scan:[/bold blue] {len(self.subdomains)}")
+            
+            scan_results = self._scan_subdomains()
+            
+            # Process results
+            for takeover_result in scan_results:
+                if takeover_result.vulnerable:
+                    self.add_common_finding(
+                        result,
+                        title=f"Subdomain Takeover Vulnerability: {takeover_result.subdomain}",
+                        description=f"Potential takeover vulnerability via {takeover_result.service}",
+                        risk_level=takeover_result.risk_level,
+                        evidence=json.dumps({
+                            "subdomain": takeover_result.subdomain,
+                            "service": takeover_result.service,
+                            "cname": takeover_result.cname,
+                            "ip_addresses": takeover_result.ip_addresses,
+                            "evidence": takeover_result.evidence,
+                            "status_code": takeover_result.status_code
+                        }, indent=2)
+                    )
+            
+            # Add scan summary to metadata
+            result.metadata.update({
                 "domain": self.domain,
-                "fingerprints_loaded": len(self.fingerprints)
-            }
-        )
-        
-        # Get subdomains to check
-        if args.subdomains:
-            self._load_subdomains_from_file(args.subdomains)
-        elif self.include_subdomains:
-            self._enumerate_subdomains()
-        else:
-            # Just check the main domain
-            self.subdomains = [self.domain]
-        
-        result.metadata["subdomains_scanned"] = len(self.subdomains)
-        
-        # Check each subdomain for takeover vulnerabilities
-        takeover_results = self._scan_subdomains()
-        
-        # Add findings based on results
-        for takeover in takeover_results:
-            if takeover.vulnerable:
-                result.add_finding(
-                    title=f"Potential subdomain takeover: {takeover.subdomain}",
-                    description=f"The subdomain {takeover.subdomain} is vulnerable to takeover via {takeover.service}",
-                    risk_level=takeover.risk_level,
-                    evidence=f"CNAME: {takeover.cname}\nService: {takeover.service}\nEvidence: {takeover.evidence}"
-                )
-        
-        # Add metadata with full results
-        result.metadata["results"] = [self._result_to_dict(r) for r in takeover_results]
-        
-        return result
+                "timestamp": datetime.now().isoformat(),
+                "subdomains_scanned": len(self.subdomains),
+                "vulnerable_count": len([r for r in scan_results if r.vulnerable])
+            })
+            
+            # Set success status
+            result.success = True
+            
+        except Exception as e:
+            result.success = False
+            result.add_error(f"Error during scan: {str(e)}")
+            if not self.is_framework_mode():
+                console.print(f"[bold red]Error:[/bold red] {str(e)}")
     
     def _load_custom_fingerprints(self, filepath: str) -> None:
         """Load custom takeover fingerprints from JSON file"""
@@ -512,8 +545,13 @@ class DNSTakeoverScanner(BaseTool):
         }
 
 def main():
+    """Main entry point for the tool"""
     tool = DNSTakeoverScanner()
-    return tool.main()
+    parser = argparse.ArgumentParser(description=tool.description)
+    tool.setup_argparse(parser)
+    args = parser.parse_args()
+    result = tool.run(args)
+    sys.exit(0 if result.success else 1)
 
 if __name__ == "__main__":
     main() 
