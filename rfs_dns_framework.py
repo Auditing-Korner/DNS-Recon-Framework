@@ -21,17 +21,43 @@ from typing import Dict, List, Any, Optional, Tuple
 from rich.logging import RichHandler
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tools.utils import check_privileges, check_operation_requirements, elevate_privileges
+from rich.text import Text
+import rich.traceback
 
 from config_manager import ConfigManager
 from tools.base_tool import BaseTool, ToolResult
 from tools import registry
 
-# Configure logging
+# Configure rich error handling
+rich.traceback.install(show_locals=False)
+
+# Configure logging with improved error handling
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[RichHandler()]
+    format='%(message)s',
+    handlers=[
+        RichHandler(
+            show_time=False,
+            show_path=False,
+            rich_tracebacks=True,
+            tracebacks_show_locals=False,
+            tracebacks_suppress=[rich.console, rich.table, rich.panel, rich.progress]
+        )
+    ]
 )
+
+# Suppress error output from external libraries
+logging.getLogger('urllib3').setLevel(logging.WARNING)
+logging.getLogger('boto3').setLevel(logging.WARNING)
+logging.getLogger('botocore').setLevel(logging.WARNING)
+logging.getLogger('azure').setLevel(logging.WARNING)
+logging.getLogger('google').setLevel(logging.WARNING)
+logging.getLogger('dns').setLevel(logging.WARNING)
+logging.getLogger('requests').setLevel(logging.WARNING)
+logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
+logging.getLogger('paramiko').setLevel(logging.WARNING)
+logging.getLogger('scapy.runtime').setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 class RFSDNSFramework:
@@ -127,16 +153,35 @@ class RFSDNSFramework:
 
     def display_banner(self):
         """Display framework banner"""
-        banner = f"""
-╔═══════════════════════════════════════════════════════════════╗
-║                RFS DNS Framework v{self.version}                    ║
-║              Comprehensive DNS Security Testing                ║
-║                                                               ║
-║  Author: rfs85                                                ║
-║  GitHub: https://github.com/rfs85/RFS-DNS-Framework           ║
-╚═══════════════════════════════════════════════════════════════╝
-        """
-        self.console.print(Panel(banner, style="bold blue"))
+        banner = Text()
+        banner.append("╔══════════════════════════════════════════════════════════════════╗\n", style="blue")
+        banner.append("║                   ", style="blue")
+        banner.append("RFS DNS Framework", style="bold cyan")
+        banner.append(f" v{self.version}", style="yellow")
+        banner.append("                    ║\n", style="blue")
+        banner.append("║              Comprehensive DNS Security Testing                   ║\n", style="blue")
+        banner.append("╠══════════════════════════════════════════════════════════════════╣\n", style="blue")
+        banner.append("║ ", style="blue")
+        banner.append("• Multi-Cloud Security Analysis", style="green")
+        banner.append("                                  ║\n", style="blue")
+        banner.append("║ ", style="blue")
+        banner.append("• Advanced DNS Enumeration & Testing", style="green")
+        banner.append("                            ║\n", style="blue")
+        banner.append("║ ", style="blue")
+        banner.append("• Vulnerability Assessment & Reporting", style="green")
+        banner.append("                          ║\n", style="blue")
+        banner.append("╠══════════════════════════════════════════════════════════════════╣\n", style="blue")
+        banner.append("║ ", style="blue")
+        banner.append("Author: ", style="dim white")
+        banner.append("rfs85", style="green")
+        banner.append("                                                    ║\n", style="blue")
+        banner.append("║ ", style="blue")
+        banner.append("GitHub: ", style="dim white")
+        banner.append("https://github.com/rfs85/RFS-DNS-Framework", style="cyan")
+        banner.append("        ║\n", style="blue")
+        banner.append("╚══════════════════════════════════════════════════════════════════╝", style="blue")
+
+        self.console.print(banner)
 
     def list_tools(self):
         """Display available tools with enhanced information"""
@@ -222,6 +267,18 @@ class RFSDNSFramework:
                 # Add any additional tool arguments
                 args.extend(tool_args)
                 
+                # Ensure HTML report generation
+                output_dir = None
+                for i, arg in enumerate(args):
+                    if arg == '--output':
+                        output_dir = os.path.dirname(args[i + 1])
+                        break
+                
+                if output_dir:
+                    html_report = os.path.join(output_dir, f"{tool_name}_report.html")
+                    if '--html-report' not in args:
+                        args.extend(['--html-report', html_report])
+                
                 # Set up sys.argv for the tool
                 sys.argv = args
                 
@@ -280,452 +337,288 @@ class RFSDNSFramework:
         # Fallback to common public DNS servers
         return ['8.8.8.8', '1.1.1.1']
 
-    def generate_html_report(self, output_file: str):
-        """Generate a comprehensive HTML report"""
+    def generate_html_report(self, results: Dict[str, Any], output_file: str) -> None:
+        """Generate an HTML report from the results"""
         try:
-            # HTML template for the report
-            template_str = """
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <title>RFS DNS Framework Report</title>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <style>
-                    :root {
-                        --primary-color: #2c3e50;
-                        --secondary-color: #34495e;
-                        --success-color: #27ae60;
-                        --warning-color: #f39c12;
-                        --danger-color: #c0392b;
-                        --info-color: #3498db;
-                        --light-color: #ecf0f1;
-                        --dark-color: #2c3e50;
-                    }
-                    
-                    body { 
-                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                        margin: 0;
-                        padding: 0;
-                        background-color: #f5f6fa;
-                        color: var(--dark-color);
-                    }
-                    
-                    .container {
-                        max-width: 1200px;
-                        margin: 0 auto;
-                        padding: 20px;
-                    }
-                    
-                    .header {
-                        background: var(--primary-color);
-                        color: white;
-                        padding: 2rem;
-                        margin-bottom: 2rem;
-                        border-radius: 8px;
-                        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                    }
-                    
-                    .section {
-                        background: white;
-                        margin: 20px 0;
-                        padding: 20px;
-                        border-radius: 8px;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                    }
-                    
-                    .tool-result {
-                        border: 1px solid #eee;
-                        padding: 20px;
-                        margin: 15px 0;
-                        border-radius: 8px;
-                        background: white;
-                        transition: all 0.3s ease;
-                    }
-                    
-                    .tool-result:hover {
-                        box-shadow: 0 4px 8px rgba(0,0,0,0.1);
-                    }
-                    
-                    .finding {
-                        border-left: 5px solid #ddd;
-                        padding: 15px;
-                        margin: 10px 0;
-                        background: #fafafa;
-                        border-radius: 0 8px 8px 0;
-                    }
-                    
-                    .Critical {
-                        border-left-color: var(--danger-color);
-                        background: rgba(192, 57, 43, 0.05);
-                    }
-                    
-                    .High {
-                        border-left-color: #e74c3c;
-                        background: rgba(231, 76, 60, 0.05);
-                    }
-                    
-                    .Medium {
-                        border-left-color: var(--warning-color);
-                        background: rgba(243, 156, 18, 0.05);
-                    }
-                    
-                    .Low {
-                        border-left-color: var(--success-color);
-                        background: rgba(39, 174, 96, 0.05);
-                    }
-                    
-                    .Info {
-                        border-left-color: var(--info-color);
-                        background: rgba(52, 152, 219, 0.05);
-                    }
-                    
-                    .error { color: var(--danger-color); }
-                    .warning { color: var(--warning-color); }
-                    .success { color: var(--success-color); }
-                    
-                    .chart {
-                        width: 100%;
-                        height: 400px;
-                        margin: 20px 0;
-                        background: white;
-                        border-radius: 8px;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                    }
-                    
-                    .stats-grid {
-                        display: grid;
-                        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                        gap: 20px;
-                        margin: 20px 0;
-                    }
-                    
-                    .stat-card {
-                        background: white;
-                        padding: 20px;
-                        border-radius: 8px;
-                        text-align: center;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                    }
-                    
-                    .stat-card h3 {
-                        margin: 0;
-                        color: var(--secondary-color);
-                    }
-                    
-                    .stat-card .value {
-                        font-size: 2em;
-                        font-weight: bold;
-                        margin: 10px 0;
-                    }
-                    
-                    .stat-card .label {
-                        color: #666;
-                        font-size: 0.9em;
-                    }
-                    
-                    .timeline {
-                        position: relative;
-                        margin: 20px 0;
-                        padding: 20px 0;
-                    }
-                    
-                    .timeline::before {
-                        content: '';
-                        position: absolute;
-                        left: 50%;
-                        width: 2px;
-                        height: 100%;
-                        background: #ddd;
-                    }
-                    
-                    .timeline-item {
-                        margin: 10px 0;
-                        padding: 10px;
-                        background: white;
-                        border-radius: 8px;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-                        position: relative;
-                    }
-                    
-                    .timeline-item::before {
-                        content: '';
-                        position: absolute;
-                        width: 12px;
-                        height: 12px;
-                        background: var(--primary-color);
-                        border-radius: 50%;
-                        left: -6px;
-                        top: 50%;
-                        transform: translateY(-50%);
-                    }
-                    
-                    pre {
-                        background: #f8f9fa;
-                        padding: 15px;
-                        border-radius: 4px;
-                        overflow-x: auto;
-                    }
-                    
-                    .tabs {
-                        display: flex;
-                        margin-bottom: 20px;
-                    }
-                    
-                    .tab {
-                        padding: 10px 20px;
-                        cursor: pointer;
-                        border: none;
-                        background: none;
-                        border-bottom: 2px solid transparent;
-                        color: #666;
-                    }
-                    
-                    .tab.active {
-                        border-bottom-color: var(--primary-color);
-                        color: var(--primary-color);
-                    }
-                    
-                    .tab-content {
-                        display: none;
-                    }
-                    
-                    .tab-content.active {
-                        display: block;
-                    }
-                    
-                    @media (max-width: 768px) {
-                        .container {
-                            padding: 10px;
-                        }
-                        
-                        .stats-grid {
-                            grid-template-columns: 1fr;
-                        }
-                        
-                        .timeline::before {
-                            left: 0;
-                        }
-                        
-                        .timeline-item {
-                            margin-left: 20px;
-                        }
-                    }
-                </style>
-                <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-                <script>
-                    function switchTab(evt, tabName) {
-                        var i, tabcontent, tablinks;
-                        tabcontent = document.getElementsByClassName("tab-content");
-                        for (i = 0; i < tabcontent.length; i++) {
-                            tabcontent[i].style.display = "none";
-                        }
-                        tablinks = document.getElementsByClassName("tab");
-                        for (i = 0; i < tablinks.length; i++) {
-                            tablinks[i].className = tablinks[i].className.replace(" active", "");
-                        }
-                        document.getElementById(tabName).style.display = "block";
-                        evt.currentTarget.className += " active";
-                    }
-                </script>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <h1>RFS DNS Framework Report</h1>
-                        <p>Domain: {{ workflow_results.domain }}</p>
-                        <p>Generated: {{ workflow_results.timestamp }}</p>
-                        <p>Framework Version: {{ workflow_results.framework_version }}</p>
-                    </div>
-                    
-                    <div class="section">
-                        <h2>Executive Summary</h2>
-                        <div class="stats-grid">
-                            <div class="stat-card">
-                                <h3>Total Tools</h3>
-                                <div class="value">{{ workflow_results.summary.total_tools }}</div>
-                                <div class="label">Tools Executed</div>
-                            </div>
-                            <div class="stat-card">
-                                <h3>Success Rate</h3>
-                                <div class="value">{{ (workflow_results.summary.successful_tools / workflow_results.summary.total_tools * 100) | round(1) }}%</div>
-                                <div class="label">Tools Completed Successfully</div>
-                            </div>
-                            <div class="stat-card">
-                                <h3>Critical Findings</h3>
-                                <div class="value" style="color: {{ '#c0392b' if workflow_results.summary.critical_findings > 0 else '#27ae60' }}">
-                                    {{ workflow_results.summary.critical_findings }}
-                                </div>
-                                <div class="label">High Priority Issues</div>
-                            </div>
-                            <div class="stat-card">
-                                <h3>Total Findings</h3>
-                                <div class="value">{{ workflow_results.summary.risk_summary.values() | sum }}</div>
-                                <div class="label">Issues Identified</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="section">
-                        <h2>Risk Analysis</h2>
-                        <div class="tabs">
-                            <button class="tab active" onclick="switchTab(event, 'riskChart')">Chart View</button>
-                            <button class="tab" onclick="switchTab(event, 'riskTable')">Table View</button>
-                        </div>
-                        
-                        <div id="riskChart" class="tab-content active">
-                            <div class="chart"></div>
-                            <script>
-                                var data = [{
-                                    values: [
-                                        {{ workflow_results.summary.risk_summary.Critical }},
-                                        {{ workflow_results.summary.risk_summary.High }},
-                                        {{ workflow_results.summary.risk_summary.Medium }},
-                                        {{ workflow_results.summary.risk_summary.Low }},
-                                        {{ workflow_results.summary.risk_summary.Info }}
-                                    ],
-                                    labels: ['Critical', 'High', 'Medium', 'Low', 'Info'],
-                                    type: 'pie',
-                                    marker: {
-                                        colors: ['#c0392b', '#e74c3c', '#f39c12', '#27ae60', '#3498db']
-                                    }
-                                }];
-                                var layout = {
-                                    title: 'Risk Distribution',
-                                    height: 400,
-                                    margin: {t: 40, b: 40, l: 40, r: 40}
-                                };
-                                Plotly.newPlot('riskChart', data, layout);
-                            </script>
-                        </div>
-                        
-                        <div id="riskTable" class="tab-content" style="display:none;">
-                            <table style="width:100%; border-collapse: collapse; margin: 20px 0;">
-                                <thead>
-                                    <tr style="background: var(--primary-color); color: white;">
-                                        <th style="padding: 10px;">Risk Level</th>
-                                        <th style="padding: 10px;">Count</th>
-                                        <th style="padding: 10px;">Percentage</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for level, count in workflow_results.summary.risk_summary.items() %}
-                                    <tr style="border-bottom: 1px solid #eee;">
-                                        <td style="padding: 10px;">{{ level }}</td>
-                                        <td style="padding: 10px;">{{ count }}</td>
-                                        <td style="padding: 10px;">
-                                            {{ (count / workflow_results.summary.risk_summary.values() | sum * 100) | round(1) }}%
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                    
-                    <div class="section">
-                        <h2>Tool Results</h2>
-                        {% for tool_name, tool_result in workflow_results.tools.items() %}
-                        <div class="tool-result">
-                            <h3>{{ tool_name }}</h3>
-                            <p>Status: 
-                                {% if tool_result.success %}
-                                <span class="success">✓ Success</span>
-                                {% else %}
-                                <span class="error">✗ Failed</span>
-                                {% endif %}
-                                {% if tool_result.critical %}
-                                <span style="color: var(--danger-color); margin-left: 10px;">⚠ Critical Tool</span>
-                                {% endif %}
-                            </p>
-                            
-                            {% if tool_result.findings %}
-                            <div class="findings">
-                                <h4>Findings</h4>
-                                {% for finding in tool_result.findings %}
-                                <div class="finding {{ finding.risk_level }}">
-                                    <h5>{{ finding.title }}</h5>
-                                    <p><strong>Risk Level:</strong> {{ finding.risk_level }}</p>
-                                    <p>{{ finding.description }}</p>
-                                    {% if finding.evidence %}
-                                    <pre>{{ finding.evidence }}</pre>
-                                    {% endif %}
-                                </div>
-                                {% endfor %}
-                            </div>
-                            {% endif %}
-                            
-                            {% if tool_result.errors %}
-                            <div class="errors">
-                                <h4>Errors</h4>
-                                {% for error in tool_result.errors %}
-                                <div class="error">
-                                    <p>{{ error.message }}</p>
-                                    <small>{{ error.timestamp }}</small>
-                                </div>
-                                {% endfor %}
-                            </div>
-                            {% endif %}
-                            
-                            {% if tool_result.output_file %}
-                            <p><small>Detailed results: <a href="{{ tool_result.output_file }}">View Report</a></small></p>
-                            {% endif %}
-                        </div>
-                        {% endfor %}
-                    </div>
-                    
-                    <div class="section">
-                        <h2>Timeline</h2>
-                        <div class="timeline">
-                            <div class="timeline-item">
-                                <strong>Scan Started:</strong> {{ workflow_results.start_time }}
-                            </div>
-                            {% for tool_name, tool_result in workflow_results.tools.items() %}
-                            <div class="timeline-item">
-                                <strong>{{ tool_name }}:</strong> {{ tool_result.timestamp }}
-                                <span class="{{ 'success' if tool_result.success else 'error' }}">
-                                    {{ '✓' if tool_result.success else '✗' }}
-                                </span>
-                            </div>
-                            {% endfor %}
-                            <div class="timeline-item">
-                                <strong>Scan Completed:</strong> {{ workflow_results.end_time }}
-                            </div>
-                        </div>
-                    </div>
-                    
-                    {% if workflow_results.summary.critical_findings > 0 or workflow_results.summary.failed_tools > 0 %}
-                    <div class="section" style="border-left: 5px solid var(--danger-color);">
-                        <h2>Recommendations</h2>
-                        <ul>
-                            {% if workflow_results.summary.critical_findings > 0 %}
-                            <li class="error">Address {{ workflow_results.summary.critical_findings }} critical security findings immediately</li>
-                            {% endif %}
-                            {% if workflow_results.summary.failed_tools > 0 %}
-                            <li class="warning">Investigate and resolve {{ workflow_results.summary.failed_tools }} tool failures</li>
-                            {% endif %}
-                        </ul>
-                    </div>
-                    {% endif %}
+            template = Template('''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RFS DNS Framework Report</title>
+    <style>
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #34495e;
+            --accent-color: #3498db;
+            --success-color: #2ecc71;
+            --warning-color: #f1c40f;
+            --danger-color: #e74c3c;
+            --critical-color: #c0392b;
+            --text-color: #2c3e50;
+            --background-color: #ecf0f1;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: var(--background-color);
+            margin: 0;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        h1, h2, h3 {
+            color: var(--primary-color);
+            margin-top: 0;
+        }
+        
+        .header {
+            background: var(--primary-color);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            color: white;
+            margin: 0;
+        }
+        
+        .timestamp {
+            color: rgba(255,255,255,0.8);
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+        
+        .summary-dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .metric-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        
+        .metric-card h3 {
+            margin: 0;
+            font-size: 1.1em;
+            color: var(--secondary-color);
+        }
+        
+        .metric-value {
+            font-size: 2em;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        
+        .findings-section {
+            margin-top: 30px;
+        }
+        
+        .finding-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .finding-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .risk-badge {
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-weight: bold;
+            color: white;
+        }
+        
+        .risk-Critical { background-color: var(--critical-color); }
+        .risk-High { background-color: var(--danger-color); }
+        .risk-Medium { background-color: var(--warning-color); color: var(--text-color); }
+        .risk-Low { background-color: var(--success-color); }
+        
+        .details-section {
+            background: var(--background-color);
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        
+        .details-section pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        
+        .tool-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .error-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: #fee;
+            border-radius: 8px;
+            border: 1px solid var(--danger-color);
+        }
+        
+        .warning-section {
+            margin-top: 30px;
+            padding: 20px;
+            background: #ffd;
+            border-radius: 8px;
+            border: 1px solid var(--warning-color);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>RFS DNS Framework Report</h1>
+            <div class="timestamp">Generated on {{ timestamp }}</div>
+        </div>
+        
+        <div class="summary-dashboard">
+            {% if results.summary %}
+            <div class="metric-card">
+                <h3>Critical Findings</h3>
+                <div class="metric-value" style="color: var(--critical-color)">
+                    {{ results.summary.risk_summary.Critical|default(0) }}
                 </div>
-            </body>
-            </html>
-            """
+            </div>
+            <div class="metric-card">
+                <h3>High Risk Findings</h3>
+                <div class="metric-value" style="color: var(--danger-color)">
+                    {{ results.summary.risk_summary.High|default(0) }}
+                </div>
+            </div>
+            <div class="metric-card">
+                <h3>Medium Risk Findings</h3>
+                <div class="metric-value" style="color: var(--warning-color)">
+                    {{ results.summary.risk_summary.Medium|default(0) }}
+                </div>
+            </div>
+            <div class="metric-card">
+                <h3>Low Risk Findings</h3>
+                <div class="metric-value" style="color: var(--success-color)">
+                    {{ results.summary.risk_summary.Low|default(0) }}
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        
+        {% if results.findings %}
+        <div class="findings-section">
+            <h2>Findings</h2>
+            {% for finding in results.findings %}
+            <div class="finding-card">
+                <div class="finding-header">
+                    <h3>{{ finding.title }}</h3>
+                    <span class="risk-badge risk-{{ finding.risk_level }}">{{ finding.risk_level }}</span>
+                </div>
+                <p>{{ finding.description }}</p>
+                {% if finding.details %}
+                <div class="details-section">
+                    <pre>{{ finding.details|tojson(indent=2) }}</pre>
+                </div>
+                {% endif %}
+                {% if finding.recommendations %}
+                <h4>Recommendations</h4>
+                <ul>
+                    {% for rec in finding.recommendations %}
+                    <li>{{ rec }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        
+        {% if results.tools %}
+        {% for tool_name, tool_results in results.tools.items() %}
+        <div class="tool-section">
+            <h2>{{ tool_name }}</h2>
+            <pre>{{ tool_results|tojson(indent=2) }}</pre>
+        </div>
+        {% endfor %}
+        {% endif %}
+        
+        {% if results.errors %}
+        <div class="error-section">
+            <h2>Errors</h2>
+            <ul>
+            {% for error in results.errors %}
+                <li>{{ error }}</li>
+            {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+        
+        {% if results.warnings %}
+        <div class="warning-section">
+            <h2>Warnings</h2>
+            <ul>
+            {% for warning in results.warnings %}
+                <li>{{ warning }}</li>
+            {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+            ''')
+            
+            # Generate timestamp
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
             # Render template
-            template = Template(template_str)
-            html_content = template.render(workflow_results=self.workflow_results)
+            html_content = template.render(
+                results=results,
+                timestamp=timestamp
+            )
             
-            # Save HTML file
-            output_path = Path(output_file)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(output_path, 'w') as f:
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+            
+            # Write HTML file
+            with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(html_content)
             
-            self.console.print(f"[green]HTML report saved to {output_file}")
-            
+            if not self.args.get('quiet'):
+                self.console.print(f"[green]HTML report generated: {output_file}")
+        
         except Exception as e:
             self.console.print(f"[red]Error generating HTML report: {str(e)}")
+            raise
 
     def run_workflow(self, domain: str, output_dir: str, report_format: str = "json", force: bool = False):
         """Run a complete DNS analysis workflow"""
@@ -869,7 +762,7 @@ class RFSDNSFramework:
         # Generate reports
         if report_format in ["html", "both"]:
             html_report = os.path.join(output_dir, "report.html")
-            self.generate_html_report(html_report)
+            self.generate_html_report(self.workflow_results, html_report)
         
         # Display final summary
         self.display_workflow_summary()
@@ -1064,11 +957,15 @@ def main():
     parser.add_argument('--output-dir', default='results',
                       help='Output directory for results')
     parser.add_argument('--report-format', choices=['json', 'html', 'both'],
-                      default='json', help='Report format (default: json)')
+                      default='both', help='Report format (default: both)')
     parser.add_argument('--check-deps', action='store_true',
                       help='Check tool dependencies')
     parser.add_argument('--force', action='store_true',
                       help='Try to run operations even without required privileges')
+    parser.add_argument('--quiet', action='store_true',
+                      help='Suppress non-essential output')
+    parser.add_argument('--no-html', action='store_true',
+                      help='Disable HTML report generation')
     parser.add_argument('tool_args', nargs=argparse.REMAINDER,
                       help='Arguments to pass to the tool')
     
@@ -1077,7 +974,10 @@ def main():
     try:
         # Initialize framework
         framework = RFSDNSFramework()
-        framework.display_banner()
+        
+        # Only show banner if not in quiet mode
+        if not args.quiet:
+            framework.display_banner()
         
         if args.check_deps:
             framework._load_tools()  # This will check dependencies
@@ -1087,7 +987,9 @@ def main():
             if not args.domain:
                 framework.console.print("[red]Error: --domain is required for workflow")
                 sys.exit(1)
-            framework.run_workflow(args.domain, args.output_dir, args.report_format, args.force)
+            # Always generate HTML report unless explicitly disabled
+            report_format = 'json' if args.no_html else 'both'
+            framework.run_workflow(args.domain, args.output_dir, report_format, args.force)
         elif args.tool:
             # Prepare tool arguments
             tool_args = []
@@ -1100,6 +1002,11 @@ def main():
             if args.output_dir:
                 output_file = os.path.join(args.output_dir, f"{args.tool}_results.json")
                 tool_args.extend(['--output', output_file])
+                
+                # Always generate HTML report unless explicitly disabled
+                if not args.no_html:
+                    html_file = os.path.join(args.output_dir, f"{args.tool}_report.html")
+                    tool_args.extend(['--html-report', html_file])
             
             # Add framework mode flag
             tool_args.append('--framework-mode')
@@ -1116,10 +1023,12 @@ def main():
             parser.print_help()
     
     except KeyboardInterrupt:
-        print("\n[!] Operation interrupted by user")
+        if not args.quiet:
+            print("\n[!] Operation interrupted by user")
         sys.exit(1)
     except Exception as e:
-        print(f"\n[!] Error: {str(e)}")
+        if not args.quiet:
+            print(f"\n[!] Error: {str(e)}")
         sys.exit(1)
 
 if __name__ == "__main__":

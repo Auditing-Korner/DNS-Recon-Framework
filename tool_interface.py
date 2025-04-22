@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from rich.console import Console
+import argparse
+from jinja2 import Template
 
 class ToolResult:
     """Standardized result object for all tools"""
@@ -141,8 +143,6 @@ class BaseTool(ABC):
     def generate_html_report(self, output_file: str):
         """Generate an HTML report from the results"""
         try:
-            from jinja2 import Template
-            
             # Basic HTML template
             template_str = """
             <!DOCTYPE html>
@@ -239,9 +239,235 @@ class BaseTool(ABC):
         except Exception as e:
             self.log_message("error", f"Error generating HTML report: {str(e)}")
 
+    def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
+        """Set up command line arguments for the tool"""
+        parser.add_argument('domain', help='Target domain')
+        parser.add_argument('--output', help='Output file for results (JSON format)')
+        parser.add_argument('--html-report', help='Generate HTML report')
+        parser.add_argument('--framework-mode', action='store_true',
+                          help='Running as part of framework workflow')
+        self._add_tool_arguments(parser)
+
+    def run(self, args: argparse.Namespace) -> ToolResult:
+        """Execute the tool and handle results"""
+        result = self._run_tool(args)
+        
+        # Save results if output file specified
+        if hasattr(args, 'output') and args.output:
+            self._save_results(result, args.output, 'json')
+            
+        # Generate HTML report if specified
+        if hasattr(args, 'html_report') and args.html_report:
+            self._save_results(result, args.html_report, 'html')
+            
+        return result
+
+    def _save_results(self, result: ToolResult, filepath: str, format: str) -> None:
+        """Save results to file in specified format"""
+        try:
+            # Create output directory if it doesn't exist
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            
+            if format == 'json':
+                with open(filepath, 'w') as f:
+                    json.dump(result.to_dict(), f, indent=2)
+            elif format == 'html':
+                self._generate_html_report(result, filepath)
+                
+        except Exception as e:
+            self.log_message('error', f"Error saving results: {str(e)}")
+
+    def _generate_html_report(self, result: ToolResult, filepath: str) -> None:
+        """Generate HTML report with improved styling"""
+        try:
+            template_str = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>{{ tool_name }} Report</title>
+                <style>
+                    :root {
+                        --primary-color: #2c3e50;
+                        --secondary-color: #3498db;
+                        --success-color: #27ae60;
+                        --warning-color: #f39c12;
+                        --danger-color: #c0392b;
+                        --info-color: #2980b9;
+                    }
+                    body {
+                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                        line-height: 1.6;
+                        margin: 0;
+                        padding: 20px;
+                        background: #f5f6fa;
+                        color: var(--primary-color);
+                    }
+                    .container {
+                        max-width: 1200px;
+                        margin: 0 auto;
+                        background: white;
+                        padding: 20px;
+                        border-radius: 8px;
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }
+                    .header {
+                        text-align: center;
+                        padding: 20px;
+                        background: var(--primary-color);
+                        color: white;
+                        border-radius: 8px;
+                        margin-bottom: 30px;
+                    }
+                    .section {
+                        margin: 30px 0;
+                        padding: 20px;
+                        background: #fff;
+                        border-radius: 8px;
+                        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                    }
+                    .finding {
+                        margin: 15px 0;
+                        padding: 15px;
+                        border-radius: 6px;
+                    }
+                    .finding.Critical {
+                        background: #fde8e8;
+                        border-left: 4px solid var(--danger-color);
+                    }
+                    .finding.High {
+                        background: #fef3c7;
+                        border-left: 4px solid var(--warning-color);
+                    }
+                    .finding.Medium {
+                        background: #e8f4fd;
+                        border-left: 4px solid var(--info-color);
+                    }
+                    .finding.Low {
+                        background: #e8f8f0;
+                        border-left: 4px solid var(--success-color);
+                    }
+                    .summary-box {
+                        display: inline-block;
+                        padding: 15px;
+                        margin: 10px;
+                        border-radius: 6px;
+                        min-width: 150px;
+                        text-align: center;
+                    }
+                    .evidence {
+                        background: #f8fafc;
+                        padding: 10px;
+                        border-radius: 4px;
+                        font-family: monospace;
+                        margin: 10px 0;
+                    }
+                    h1, h2, h3 {
+                        color: var(--primary-color);
+                    }
+                    .timestamp {
+                        color: #666;
+                        font-size: 0.9em;
+                        text-align: right;
+                        margin-top: 20px;
+                    }
+                    .risk-summary {
+                        display: flex;
+                        justify-content: space-around;
+                        flex-wrap: wrap;
+                        margin: 20px 0;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="header">
+                        <h1>{{ tool_name }}</h1>
+                        <p>Security Analysis Report</p>
+                    </div>
+                    
+                    <div class="section">
+                        <h2>Overview</h2>
+                        <div class="risk-summary">
+                            {% for level, count in result.risk_summary.items() %}
+                            <div class="summary-box {{ level }}">
+                                <h3>{{ level }}</h3>
+                                <p>{{ count }}</p>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    
+                    {% if result.findings %}
+                    <div class="section">
+                        <h2>Findings</h2>
+                        {% for finding in result.findings %}
+                        <div class="finding {{ finding.risk_level }}">
+                            <h3>{{ finding.title }}</h3>
+                            <p><strong>Risk Level:</strong> {{ finding.risk_level }}</p>
+                            <p>{{ finding.description }}</p>
+                            {% if finding.evidence %}
+                            <div class="evidence">
+                                <pre>{{ finding.evidence }}</pre>
+                            </div>
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    
+                    {% if result.errors %}
+                    <div class="section">
+                        <h2>Errors</h2>
+                        {% for error in result.errors %}
+                        <div class="finding Critical">
+                            <p>{{ error }}</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    
+                    {% if result.warnings %}
+                    <div class="section">
+                        <h2>Warnings</h2>
+                        {% for warning in result.warnings %}
+                        <div class="finding High">
+                            <p>{{ warning }}</p>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    
+                    <div class="timestamp">
+                        Generated: {{ result.timestamp }}
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
+            # Prepare template data
+            template_data = {
+                'tool_name': self.__class__.__name__,
+                'result': result,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Render template
+            template = Template(template_str)
+            html_content = template.render(**template_data)
+            
+            # Save HTML file
+            with open(filepath, 'w') as f:
+                f.write(html_content)
+                
+            self.log_message('info', f"HTML report saved to {filepath}")
+            
+        except Exception as e:
+            self.log_message('error', f"Error generating HTML report: {str(e)}")
+
     @abstractmethod
-    def run(self, *args, **kwargs):
-        """Main method to be implemented by each tool"""
+    def _run_tool(self, args: argparse.Namespace) -> ToolResult:
+        """Main tool implementation to be overridden by subclasses"""
         pass
 
     def __enter__(self):
