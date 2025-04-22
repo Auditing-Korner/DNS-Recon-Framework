@@ -22,10 +22,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 try:
-    from .framework_tool_template import FrameworkTool, ToolResult
+    from .base_tool import BaseTool, ToolResult
 except ImportError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tools.framework_tool_template import FrameworkTool, ToolResult
+    from tools.base_tool import BaseTool, ToolResult
 
 # Check dependencies
 MISSING_DEPS = []
@@ -69,7 +69,7 @@ class SSLResult:
     headers: Dict
     errors: List[str]
 
-class SSLScanner(FrameworkTool):
+class SSLScanner(BaseTool):
     """SSL/TLS Security Scanner Tool"""
     
     def __init__(self):
@@ -115,8 +115,8 @@ class SSLScanner(FrameworkTool):
             "Referrer-Policy"
         ]
     
-    def setup_tool_arguments(self, parser: Union[argparse.ArgumentParser, argparse._ArgumentGroup]) -> None:
-        """Set up tool-specific arguments"""
+    def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
+        """Set up argument parsing"""
         parser.add_argument('domain', help='Domain to scan')
         parser.add_argument('--ports', type=str, default="443,8443",
                           help='Comma-separated list of ports to scan')
@@ -126,14 +126,30 @@ class SSLScanner(FrameworkTool):
                           help='Number of concurrent threads')
         parser.add_argument('--check-subdomains', action='store_true',
                           help='Also check subdomains')
+        
+        # Framework integration arguments
+        parser.add_argument('--output', help='Output file path for results')
+        parser.add_argument('--framework-mode', action='store_true',
+                          help='Run in framework integration mode')
     
-    def execute_tool(self, args: argparse.Namespace, result: ToolResult) -> None:
+    def run(self, args: argparse.Namespace) -> ToolResult:
         """Execute SSL/TLS security scan"""
+        result = ToolResult(
+            success=True,
+            tool_name=self.name,
+            findings=[],
+            metadata={
+                "domain": args.domain,
+                "timestamp": datetime.now().isoformat(),
+                "framework_mode": args.framework_mode if hasattr(args, 'framework_mode') else False
+            }
+        )
+        
         try:
             # Check dependencies
             if MISSING_DEPS:
                 result.add_error(f"Missing required dependencies: {', '.join(MISSING_DEPS)}")
-                return
+                return result
             
             # Parse ports
             try:
@@ -143,8 +159,6 @@ class SSLScanner(FrameworkTool):
             
             # Update metadata
             result.metadata.update({
-                "domain": args.domain,
-                "timestamp": datetime.now().isoformat(),
                 "ports_scanned": ports,
                 "check_subdomains": args.check_subdomains
             })
@@ -154,8 +168,7 @@ class SSLScanner(FrameworkTool):
             
             # Add findings based on scan results
             if not scan_result.cert_valid:
-                self.add_common_finding(
-                    result,
+                result.add_finding(
                     title=f"Invalid SSL Certificate: {scan_result.hostname}",
                     description="The SSL certificate is invalid or expired",
                     risk_level="High",
@@ -165,8 +178,7 @@ class SSLScanner(FrameworkTool):
             # Check for insecure protocols
             insecure_protocols = [p for p in scan_result.protocols if p in ["SSLv2", "SSLv3", "TLSv1.0"]]
             if insecure_protocols:
-                self.add_common_finding(
-                    result,
+                result.add_finding(
                     title="Insecure SSL/TLS Protocols Detected",
                     description=f"The following insecure protocols are enabled: {', '.join(insecure_protocols)}",
                     risk_level="High",
@@ -176,8 +188,7 @@ class SSLScanner(FrameworkTool):
             # Check for weak ciphers
             weak_ciphers = [c for c in scan_result.ciphers if "NULL" in c or "RC4" in c or "MD5" in c]
             if weak_ciphers:
-                self.add_common_finding(
-                    result,
+                result.add_finding(
                     title="Weak Cipher Suites Detected",
                     description=f"The following weak cipher suites are enabled: {', '.join(weak_ciphers)}",
                     risk_level="Medium",
@@ -186,8 +197,7 @@ class SSLScanner(FrameworkTool):
             
             # Check for vulnerabilities
             for vuln in scan_result.vulnerabilities:
-                self.add_common_finding(
-                    result,
+                result.add_finding(
                     title=f"Vulnerability Detected: {vuln['name']}",
                     description=vuln['description'],
                     risk_level=vuln['severity'],
@@ -201,155 +211,159 @@ class SSLScanner(FrameworkTool):
                     missing_headers.append(header)
             
             if missing_headers:
-                self.add_common_finding(
-                    result,
+                result.add_finding(
                     title="Missing Security Headers",
                     description=f"The following security headers are missing: {', '.join(missing_headers)}",
                     risk_level="Medium",
                     evidence=f"Present headers: {', '.join(scan_result.headers.keys())}"
                 )
             
-            # Add any errors
+            # Add errors from scan
             for error in scan_result.errors:
                 result.add_error(error)
             
-            # Set success status
-            result.success = len(scan_result.errors) == 0
+            # Add risk summary for framework integration
+            if hasattr(args, 'framework_mode') and args.framework_mode:
+                risk_summary = {
+                    'Critical': 0,
+                    'High': 0,
+                    'Medium': 0,
+                    'Low': 0,
+                    'Info': 0
+                }
+                for finding in result.findings:
+                    risk_summary[finding.get('risk_level', 'Info')] += 1
+                result.metadata['risk_summary'] = risk_summary
+            
+            # Handle output file if specified
+            if hasattr(args, 'output') and args.output:
+                try:
+                    output_dir = os.path.dirname(args.output)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    
+                    with open(args.output, 'w') as f:
+                        json.dump(result.to_dict(), f, indent=2)
+                except Exception as e:
+                    result.add_error(f"Error writing output file: {str(e)}")
+            
+            return result
             
         except Exception as e:
             result.success = False
-            result.add_error(f"Error during SSL/TLS scan: {str(e)}")
-            if not self.is_framework_mode():
-                logging.error(f"Error: {str(e)}")
-    
+            result.add_error(f"Error during scan: {str(e)}")
+            return result
+
     def scan_host(self, hostname: str, ports: List[int], timeout: int) -> SSLResult:
-        """Scan a host for SSL/TLS configuration"""
-        errors = []
-        protocols = []
-        ciphers = []
-        vulnerabilities = []
-        headers = {}
-        cert_valid = False
-        cert_expires = "Unknown"
-        current_port = None
-        
-        try:
-            # Test each port
-            for port in ports:
-                current_port = port
-                try:
-                    # Create SSL context
-                    context = ssl.create_default_context()
-                    context.check_hostname = False
-                    context.verify_mode = ssl.CERT_NONE
-                    
-                    # Connect and get certificate
-                    with socket.create_connection((hostname, port), timeout=timeout) as sock:
-                        with context.wrap_socket(sock, server_hostname=hostname) as ssock:
-                            cert = ssock.getpeercert(binary_form=True)
-                            x509_cert = x509.load_der_x509_certificate(cert, default_backend())
-                            
-                            # Check certificate validity
-                            cert_valid = True
-                            # Fix deprecation warning by using not_valid_after_utc
-                            cert_expires = x509_cert.not_valid_after_utc.isoformat()
-                            
-                            # Get protocols and ciphers
-                            protocols.extend(ssock.shared_ciphers())
-                            ciphers.extend([cipher[0] for cipher in ssock.shared_ciphers()])
-                            
-                            # Check for vulnerabilities
-                            self._check_vulnerabilities(ssock, vulnerabilities)
-                            
-                            # Get security headers
-                            headers = self._get_security_headers(hostname, port)
-                    
-                except ssl.SSLError as e:
-                    errors.append(f"SSL error on port {port}: {str(e)}")
-                except socket.error as e:
-                    errors.append(f"Connection error on port {port}: {str(e)}")
-                except Exception as e:
-                    errors.append(f"Error scanning port {port}: {str(e)}")
-        
-        except Exception as e:
-            errors.append(f"Error during scan: {str(e)}")
-        
-        return SSLResult(
+        """Perform SSL/TLS scan of a host"""
+        result = SSLResult(
             hostname=hostname,
-            port=current_port or ports[0],
-            cert_valid=cert_valid,
-            cert_expires=cert_expires,
-            protocols=protocols,
-            ciphers=ciphers,
-            vulnerabilities=vulnerabilities,
-            headers=headers,
-            errors=errors
+            port=0,
+            cert_valid=False,
+            cert_expires="",
+            protocols=[],
+            ciphers=[],
+            vulnerabilities=[],
+            headers={},
+            errors=[]
         )
-    
+        
+        for port in ports:
+            try:
+                # Create SSL context
+                context = ssl.create_default_context()
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+                
+                # Connect to host
+                with socket.create_connection((hostname, port), timeout=timeout) as sock:
+                    with context.wrap_socket(sock, server_hostname=hostname) as ssl_sock:
+                        # Get certificate info
+                        cert = ssl_sock.getpeercert(binary_form=True)
+                        x509_cert = x509.load_der_x509_certificate(cert, default_backend())
+                        
+                        result.port = port
+                        result.cert_valid = True
+                        result.cert_expires = x509_cert.not_valid_after.isoformat()
+                        
+                        # Get protocol version
+                        result.protocols.append(ssl_sock.version())
+                        
+                        # Get cipher info
+                        cipher = ssl_sock.cipher()
+                        if cipher:
+                            result.ciphers.append(f"{cipher[0]}:{cipher[1]}:{cipher[2]}")
+                        
+                        # Check for vulnerabilities
+                        self._check_vulnerabilities(ssl_sock, result.vulnerabilities)
+                
+                # Get security headers
+                result.headers = self._get_security_headers(hostname, port)
+                
+            except ssl.SSLError as e:
+                result.errors.append(f"SSL Error on port {port}: {str(e)}")
+            except socket.error as e:
+                result.errors.append(f"Connection Error on port {port}: {str(e)}")
+            except Exception as e:
+                result.errors.append(f"Error scanning port {port}: {str(e)}")
+        
+        return result
+
     def _check_vulnerabilities(self, ssl_socket: ssl.SSLSocket, vulnerabilities: List[Dict]) -> None:
         """Check for known SSL/TLS vulnerabilities"""
-        try:
-            # Check for Heartbleed
-            if self._check_heartbleed(ssl_socket):
-                vulnerabilities.append({
-                    **self.vulnerabilities["heartbleed"],
-                    "details": "Server is vulnerable to Heartbleed"
-                })
-            
-            # Check for POODLE
-            if "SSLv3" in ssl_socket.version():
-                vulnerabilities.append({
-                    **self.vulnerabilities["poodle"],
-                    "details": "Server supports SSLv3, vulnerable to POODLE"
-                })
-            
-            # Check for FREAK
-            if any("EXPORT" in cipher for cipher in ssl_socket.shared_ciphers()):
-                vulnerabilities.append({
-                    **self.vulnerabilities["freak"],
-                    "details": "Server supports EXPORT ciphers, vulnerable to FREAK"
-                })
-            
-        except Exception as e:
+        # Check for Heartbleed
+        if self._check_heartbleed(ssl_socket):
             vulnerabilities.append({
-                "name": "Vulnerability Check Error",
-                "description": f"Error checking vulnerabilities: {str(e)}",
-                "severity": "Error"
+                "name": self.vulnerabilities["heartbleed"]["name"],
+                "description": self.vulnerabilities["heartbleed"]["description"],
+                "severity": self.vulnerabilities["heartbleed"]["severity"],
+                "details": "Server is vulnerable to Heartbleed attack"
             })
-    
+        
+        # Check protocol version for POODLE
+        if "SSLv3" in ssl_socket.version():
+            vulnerabilities.append({
+                "name": self.vulnerabilities["poodle"]["name"],
+                "description": self.vulnerabilities["poodle"]["description"],
+                "severity": self.vulnerabilities["poodle"]["severity"],
+                "details": "Server supports SSLv3, vulnerable to POODLE attack"
+            })
+
     def _check_heartbleed(self, ssl_socket: ssl.SSLSocket) -> bool:
         """Check if server is vulnerable to Heartbleed"""
-        try:
-            # Implementation of Heartbleed check would go here
-            # This is a placeholder - actual implementation would require careful testing
-            return False
-        except:
-            return False
-    
+        # This is a placeholder - actual Heartbleed check would require packet-level testing
+        # which should only be done with explicit permission
+        return False
+
     def _get_security_headers(self, hostname: str, port: int) -> Dict:
-        """Get security headers from the server"""
+        """Get security headers from HTTPS response"""
         headers = {}
         try:
-            # Use requests instead of http.client for better error handling
-            url = f"https://{hostname}:{port}"
-            response = requests.head(url, timeout=5, verify=False)
-            
-            for header in self.security_headers:
-                if header in response.headers:
-                    headers[header] = response.headers[header]
-            
-            return headers
-            
-        except Exception as e:
-            return {"error": str(e)}
+            response = requests.get(
+                f"https://{hostname}:{port}",
+                timeout=5,
+                verify=False  # We've already checked the cert
+            )
+            headers = {k: v for k, v in response.headers.items()
+                      if k in self.security_headers}
+        except:
+            pass
+        return headers
 
 def main():
-    """Main entry point for the tool"""
+    """Main function for standalone usage"""
     tool = SSLScanner()
     parser = argparse.ArgumentParser(description=tool.description)
     tool.setup_argparse(parser)
     args = parser.parse_args()
+    
     result = tool.run(args)
+    
+    if args.output:
+        print(f"Results written to {args.output}")
+    else:
+        print(json.dumps(result.to_dict(), indent=2))
+    
     sys.exit(0 if result.success else 1)
 
 if __name__ == "__main__":

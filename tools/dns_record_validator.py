@@ -38,7 +38,7 @@ class DNSRecordValidator(BaseTool):
     
     def __init__(self):
         super().__init__(
-            name="dns-validator",
+            name="dns-record-validator",
             description="DNS Record Validation and Best Practices Analysis"
         )
         self.domain = None
@@ -76,8 +76,6 @@ class DNSRecordValidator(BaseTool):
 
     def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
         """Set up argument parsing"""
-        super().setup_argparse(parser)
-        
         parser.add_argument('domain', help='Target domain to validate')
         parser.add_argument('--check-spf', action='store_true',
                           help='Validate SPF records')
@@ -92,7 +90,7 @@ class DNSRecordValidator(BaseTool):
         parser.add_argument('--timeout', type=int, default=5,
                           help='Timeout for DNS queries in seconds')
         
-        # Add framework integration arguments
+        # Framework integration arguments
         parser.add_argument('--output', help='Output file path for results')
         parser.add_argument('--framework-mode', action='store_true',
                           help='Run in framework integration mode')
@@ -148,6 +146,19 @@ class DNSRecordValidator(BaseTool):
                         json.dump(result.to_dict(), f, indent=2)
                 except Exception as e:
                     result.add_error(f"Error writing output file: {str(e)}")
+            
+            # Add risk summary for framework integration
+            if hasattr(args, 'framework_mode') and args.framework_mode:
+                risk_summary = {
+                    'Critical': 0,
+                    'High': 0,
+                    'Medium': 0,
+                    'Low': 0,
+                    'Info': 0
+                }
+                for finding in result.findings:
+                    risk_summary[finding.get('risk_level', 'Info')] += 1
+                result.metadata['risk_summary'] = risk_summary
             
             return result
             
@@ -255,8 +266,15 @@ class DNSRecordValidator(BaseTool):
     def _validate_spf(self, result: ToolResult) -> None:
         """Validate SPF records"""
         try:
-            txt_records = dns.resolver.resolve(self.domain, 'TXT')
-            spf_records = [str(r) for r in txt_records if 'v=spf1' in str(r)]
+            spf_records = []
+            try:
+                txt_records = dns.resolver.resolve(self.domain, 'TXT')
+                for record in txt_records:
+                    for string in record.strings:
+                        if string.decode().startswith('v=spf1'):
+                            spf_records.append(string.decode())
+            except dns.resolver.NoAnswer:
+                pass
             
             if not spf_records:
                 result.add_finding(
@@ -270,48 +288,43 @@ class DNSRecordValidator(BaseTool):
                 result.add_finding(
                     title="Multiple SPF Records",
                     description="Multiple SPF records found. This is invalid and may cause issues.",
-                    risk_level="High",
-                    evidence="\n".join(spf_records)
+                    risk_level="High"
                 )
             
-            spf_record = spf_records[0]
+            spf = spf_records[0]
             
-            # Check record length
-            if len(spf_record) > self.validation_rules['SPF']['max_length']:
+            # Check length
+            if len(spf) > self.validation_rules['SPF']['max_length']:
                 result.add_finding(
                     title="SPF Record Too Long",
                     description=f"SPF record exceeds {self.validation_rules['SPF']['max_length']} characters",
-                    risk_level="Medium",
-                    evidence=spf_record
-                )
-            
-            # Count DNS lookups
-            lookup_mechanisms = ['include:', 'exists:', 'a:', 'mx:', 'ptr:']
-            lookup_count = sum(spf_record.count(m) for m in lookup_mechanisms)
-            
-            if lookup_count > self.validation_rules['SPF']['max_lookups']:
-                result.add_finding(
-                    title="Too Many SPF Lookups",
-                    description=f"SPF record has {lookup_count} DNS lookups (max {self.validation_rules['SPF']['max_lookups']})",
-                    risk_level="High",
-                    evidence=spf_record
+                    risk_level="Medium"
                 )
             
             # Check for recommended tags
-            for tag in self.validation_rules['SPF']['recommended_tags']:
-                if tag not in spf_record:
-                    result.add_finding(
-                        title=f"Missing Recommended SPF Tag: {tag}",
-                        description=f"SPF record should include {tag} for better security",
-                        risk_level="Medium",
-                        evidence=spf_record
-                    )
-                    
+            if not any(tag in spf for tag in self.validation_rules['SPF']['recommended_tags']):
+                result.add_finding(
+                    title="Weak SPF Policy",
+                    description="SPF record does not specify a strong policy (~all or -all)",
+                    risk_level="Medium"
+                )
+            
+            # Count DNS lookups
+            lookup_mechanisms = ['include:', 'a:', 'mx:', 'ptr:', 'exists:']
+            lookup_count = sum(spf.count(mech) for mech in lookup_mechanisms)
+            
+            if lookup_count > self.validation_rules['SPF']['max_lookups']:
+                result.add_finding(
+                    title="Excessive SPF Lookups",
+                    description=f"SPF record requires {lookup_count} DNS lookups (max {self.validation_rules['SPF']['max_lookups']})",
+                    risk_level="Medium"
+                )
+                
         except Exception as e:
             result.add_finding(
                 title="SPF Validation Error",
                 description=f"Error validating SPF record: {str(e)}",
-                risk_level="High"
+                risk_level="Medium"
             )
 
     def _validate_dmarc(self, result: ToolResult) -> None:
@@ -320,12 +333,17 @@ class DNSRecordValidator(BaseTool):
             dmarc_domain = f"_dmarc.{self.domain}"
             try:
                 txt_records = dns.resolver.resolve(dmarc_domain, 'TXT')
-                dmarc_records = [str(r) for r in txt_records if 'v=DMARC1' in str(r)]
+                dmarc_records = []
+                
+                for record in txt_records:
+                    for string in record.strings:
+                        if string.decode().startswith('v=DMARC1'):
+                            dmarc_records.append(string.decode())
                 
                 if not dmarc_records:
                     result.add_finding(
                         title="Missing DMARC Record",
-                        description="No DMARC record found. This reduces email security.",
+                        description="No DMARC record found. Email authentication is incomplete.",
                         risk_level="High"
                     )
                     return
@@ -334,120 +352,136 @@ class DNSRecordValidator(BaseTool):
                     result.add_finding(
                         title="Multiple DMARC Records",
                         description="Multiple DMARC records found. This is invalid.",
-                        risk_level="High",
-                        evidence="\n".join(dmarc_records)
+                        risk_level="High"
                     )
                 
-                dmarc_record = dmarc_records[0]
+                dmarc = dmarc_records[0]
                 
                 # Check required tags
                 for tag in self.validation_rules['DMARC']['required_tags']:
-                    if tag not in dmarc_record:
+                    if tag not in dmarc:
                         result.add_finding(
-                            title=f"Missing Required DMARC Tag: {tag}",
-                            description=f"DMARC record must include {tag}",
-                            risk_level="High",
-                            evidence=dmarc_record
+                            title="Invalid DMARC Record",
+                            description=f"Missing required DMARC tag: {tag}",
+                            risk_level="High"
                         )
                 
-                # Check recommended tags
-                for tag in self.validation_rules['DMARC']['recommended_tags']:
-                    if tag not in dmarc_record:
-                        result.add_finding(
-                            title=f"Missing Recommended DMARC Tag: {tag}",
-                            description=f"DMARC record should include {tag}",
-                            risk_level="Medium",
-                            evidence=dmarc_record
-                        )
-                
-                # Check policy
-                if 'p=none' in dmarc_record:
+                # Check policy strength
+                if 'p=none' in dmarc:
                     result.add_finding(
-                        title="Permissive DMARC Policy",
-                        description="DMARC policy is set to 'none'. Consider using 'quarantine' or 'reject'",
-                        risk_level="Medium",
-                        evidence=dmarc_record
+                        title="Weak DMARC Policy",
+                        description="DMARC policy is set to 'none'",
+                        risk_level="Medium"
                     )
                 
+                # Check recommended tags
+                missing_recommended = [tag for tag in self.validation_rules['DMARC']['recommended_tags']
+                                    if tag not in dmarc]
+                if missing_recommended:
+                    result.add_finding(
+                        title="Incomplete DMARC Configuration",
+                        description=f"Missing recommended DMARC tags: {', '.join(missing_recommended)}",
+                        risk_level="Low"
+                    )
+                    
             except dns.resolver.NXDOMAIN:
                 result.add_finding(
                     title="Missing DMARC Record",
-                    description="No DMARC record found (NXDOMAIN)",
+                    description="No DMARC record found. Email authentication is incomplete.",
                     risk_level="High"
+                )
+            except Exception as e:
+                result.add_finding(
+                    title="DMARC Resolution Error",
+                    description=f"Error resolving DMARC record: {str(e)}",
+                    risk_level="Medium"
                 )
                 
         except Exception as e:
             result.add_finding(
                 title="DMARC Validation Error",
                 description=f"Error validating DMARC record: {str(e)}",
-                risk_level="High"
+                risk_level="Medium"
             )
 
     def _check_dkim(self, result: ToolResult) -> None:
         """Check for DKIM records"""
-        common_selectors = ['default', 'google', 'selector1', 'selector2', 'dkim', 'k1']
-        found_selectors = []
-        
-        for selector in common_selectors:
-            try:
-                dkim_domain = f"{selector}._domainkey.{self.domain}"
-                dns.resolver.resolve(dkim_domain, 'TXT')
-                found_selectors.append(selector)
-            except:
-                continue
-        
-        if not found_selectors:
+        try:
+            # Common DKIM selectors
+            selectors = ['default', 'google', 'selector1', 'selector2', 'dkim']
+            
+            found_dkim = False
+            for selector in selectors:
+                try:
+                    dkim_domain = f"{selector}._domainkey.{self.domain}"
+                    dns.resolver.resolve(dkim_domain, 'TXT')
+                    found_dkim = True
+                    break
+                except:
+                    continue
+            
+            if not found_dkim:
+                result.add_finding(
+                    title="No DKIM Records Found",
+                    description="No DKIM records found with common selectors. Email authentication is incomplete.",
+                    risk_level="Medium"
+                )
+                
+        except Exception as e:
             result.add_finding(
-                title="No DKIM Records Found",
-                description="No DKIM records found with common selectors. Email authentication may be incomplete.",
-                risk_level="Medium",
-                evidence=f"Checked selectors: {', '.join(common_selectors)}"
-            )
-        else:
-            result.add_finding(
-                title="DKIM Records Found",
-                description=f"Found {len(found_selectors)} DKIM records",
-                risk_level="Info",
-                evidence=f"Active selectors: {', '.join(found_selectors)}"
+                title="DKIM Check Error",
+                description=f"Error checking DKIM records: {str(e)}",
+                risk_level="Low"
             )
 
     def _analyze_ttl(self, result: ToolResult) -> None:
-        """Analyze TTL values for DNS records"""
-        record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT']
-        
-        for rtype in record_types:
-            try:
-                answers = dns.resolver.resolve(self.domain, rtype)
-                for answer in answers:
-                    ttl = answer.ttl
+        """Analyze TTL values for various records"""
+        try:
+            record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT']
+            
+            for rtype in record_types:
+                try:
+                    answers = dns.resolver.resolve(self.domain, rtype)
+                    for answer in answers:
+                        ttl = answer.ttl
+                        
+                        if ttl < self.validation_rules['TTL']['min']:
+                            result.add_finding(
+                                title=f"Low TTL Value ({rtype})",
+                                description=f"TTL for {rtype} record is {ttl}s (min recommended: {self.validation_rules['TTL']['min']}s)",
+                                risk_level="Low"
+                            )
+                        elif ttl > self.validation_rules['TTL']['max']:
+                            result.add_finding(
+                                title=f"High TTL Value ({rtype})",
+                                description=f"TTL for {rtype} record is {ttl}s (max recommended: {self.validation_rules['TTL']['max']}s)",
+                                risk_level="Low"
+                            )
+                except:
+                    continue
                     
-                    if ttl < self.validation_rules['TTL']['min']:
-                        result.add_finding(
-                            title=f"TTL Too Low for {rtype} Record",
-                            description=f"TTL value {ttl}s is below minimum recommended {self.validation_rules['TTL']['min']}s",
-                            risk_level="Medium",
-                            evidence=f"Record: {answer}"
-                        )
-                    elif ttl > self.validation_rules['TTL']['max']:
-                        result.add_finding(
-                            title=f"TTL Too High for {rtype} Record",
-                            description=f"TTL value {ttl}s exceeds maximum recommended {self.validation_rules['TTL']['max']}s",
-                            risk_level="Low",
-                            evidence=f"Record: {answer}"
-                        )
-                    elif abs(ttl - self.validation_rules['TTL']['recommended']) > 1800:
-                        result.add_finding(
-                            title=f"Non-standard TTL for {rtype} Record",
-                            description=f"TTL value {ttl}s deviates significantly from recommended {self.validation_rules['TTL']['recommended']}s",
-                            risk_level="Info",
-                            evidence=f"Record: {answer}"
-                        )
-            except:
-                continue
+        except Exception as e:
+            result.add_finding(
+                title="TTL Analysis Error",
+                description=f"Error analyzing TTL values: {str(e)}",
+                risk_level="Low"
+            )
 
 def main():
+    """Main function for standalone usage"""
     tool = DNSRecordValidator()
-    return tool.main()
+    parser = argparse.ArgumentParser(description=tool.description)
+    tool.setup_argparse(parser)
+    args = parser.parse_args()
+    
+    result = tool.run(args)
+    
+    if args.output:
+        print(f"Results written to {args.output}")
+    else:
+        print(json.dumps(result.to_dict(), indent=2))
+    
+    sys.exit(0 if result.success else 1)
 
 if __name__ == "__main__":
-    sys.exit(0 if main()['status'] == 'success' else 1) 
+    main() 

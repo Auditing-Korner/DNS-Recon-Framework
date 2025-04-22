@@ -47,8 +47,6 @@ class CloudProviderEnumerator(BaseTool):
 
     def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
         """Set up argument parsing"""
-        super().setup_argparse(parser)
-        
         parser.add_argument('domain', help='Target domain to analyze')
         parser.add_argument('--analyze', action='store_true',
                           help='Perform detailed analysis of detected providers')
@@ -57,6 +55,67 @@ class CloudProviderEnumerator(BaseTool):
         parser.add_argument('--timeout', type=int, default=5,
                           help='Timeout in seconds for requests (default: 5)')
         
+        # Framework integration arguments
+        parser.add_argument('--output', help='Output file path for results')
+        parser.add_argument('--framework-mode', action='store_true',
+                          help='Run in framework integration mode')
+    
+    def run(self, args: argparse.Namespace) -> ToolResult:
+        """Run the tool with the given arguments"""
+        result = ToolResult(
+            success=True,
+            tool_name=self.name,
+            findings=[],
+            metadata={
+                "domain": args.domain,
+                "timestamp": datetime.now().isoformat(),
+                "framework_mode": args.framework_mode if hasattr(args, 'framework_mode') else False,
+                "analyze_mode": args.analyze
+            }
+        )
+        
+        try:
+            # Check dependencies
+            deps_ok, error_msg = self.check_dependencies()
+            if not deps_ok:
+                result.add_error(error_msg)
+                return result
+            
+            # Analyze domain
+            self.analyze_domain(args.domain, args.analyze, result)
+            
+            # Add risk summary for framework integration
+            if hasattr(args, 'framework_mode') and args.framework_mode:
+                risk_summary = {
+                    'Critical': 0,
+                    'High': 0,
+                    'Medium': 0,
+                    'Low': 0,
+                    'Info': 0
+                }
+                for finding in result.findings:
+                    risk_summary[finding.get('risk_level', 'Info')] += 1
+                result.metadata['risk_summary'] = risk_summary
+            
+            # Handle output file if specified
+            if hasattr(args, 'output') and args.output:
+                try:
+                    output_dir = os.path.dirname(args.output)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    
+                    with open(args.output, 'w') as f:
+                        json.dump(result.to_dict(), f, indent=2)
+                except Exception as e:
+                    result.add_error(f"Error writing output file: {str(e)}")
+            
+            return result
+            
+        except Exception as e:
+            result.success = False
+            result.add_error(f"Error during analysis: {str(e)}")
+            return result
+
     def check_dependencies(self) -> Tuple[bool, Optional[str]]:
         """Check if required dependencies are available"""
         try:
@@ -66,13 +125,14 @@ class CloudProviderEnumerator(BaseTool):
         except ImportError as e:
             return False, f"Missing dependency: {str(e)}"
             
-    def analyze_domain(self, domain: str, analyze: bool = False) -> ToolResult:
+    def analyze_domain(self, domain: str, analyze: bool = False, result: ToolResult = None) -> None:
         """Analyze a domain for cloud provider usage"""
-        result = ToolResult(
-            success=True,
-            tool_name=self.name,
-            findings=[]
-        )
+        if result is None:
+            result = ToolResult(
+                success=True,
+                tool_name=self.name,
+                findings=[]
+            )
         
         try:
             # Resolve domain
@@ -132,12 +192,8 @@ class CloudProviderEnumerator(BaseTool):
                     if provider in self.providers:
                         self._analyze_provider(domain, provider, self.providers[provider], result)
             
-            return result
-            
         except Exception as e:
-            result.success = False
             result.add_error(f"Error analyzing domain: {str(e)}")
-            return result
             
     def _analyze_provider(self, domain: str, provider: str, provider_info: Dict, result: ToolResult) -> None:
         """Perform detailed analysis of a detected provider"""
@@ -175,20 +231,6 @@ class CloudProviderEnumerator(BaseTool):
                     
         except Exception as e:
             result.add_warning(f"Error analyzing {provider}: {str(e)}")
-            
-    def run(self, args: argparse.Namespace) -> ToolResult:
-        """Run the tool with the given arguments"""
-        result = self.analyze_domain(args.domain, args.analyze)
-        
-        # Save results if output file specified
-        if hasattr(args, 'output') and args.output:
-            try:
-                with open(args.output, 'w') as f:
-                    json.dump(result.__dict__, f, indent=4)
-            except Exception as e:
-                result.add_error(f"Failed to save results: {str(e)}")
-        
-        return result
 
     def _check_permissions(self):
         """Check if we have necessary permissions for DNS operations"""
@@ -200,12 +242,12 @@ class CloudProviderEnumerator(BaseTool):
             self.resolver.nameservers = ['8.8.8.8', '1.1.1.1']
 
     def _load_providers(self) -> dict:
+        """Load cloud provider definitions"""
         try:
-            with open(self.providers_file, 'r') as f:
-                data = json.load(f)
-                return {provider['name']: provider for provider in data['cloud_providers']}
+            with open(self.providers_file) as f:
+                return json.load(f)
         except Exception as e:
-            print(f"Error loading providers file: {e}")
+            self.console.print(f"[red]Error loading providers: {str(e)}")
             return {}
 
     def get_provider(self, provider_name: str) -> Optional[dict]:
@@ -529,15 +571,20 @@ class CloudProviderEnumerator(BaseTool):
             print(f"Website: {website}")
 
 def main():
+    """Main function for standalone usage"""
     tool = CloudProviderEnumerator()
-    return tool.main()
+    parser = argparse.ArgumentParser(description=tool.description)
+    tool.setup_argparse(parser)
+    args = parser.parse_args()
+    
+    result = tool.run(args)
+    
+    if args.output:
+        print(f"Results written to {args.output}")
+    else:
+        print(json.dumps(result.to_dict(), indent=2))
+    
+    sys.exit(0 if result.success else 1)
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n[!] Operation interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        print(f"\n[!] Error: {str(e)}")
-        sys.exit(1) 
+    main() 
