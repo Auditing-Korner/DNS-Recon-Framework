@@ -75,8 +75,6 @@ class DNSSecurityScanner(BaseTool):
 
     def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
         """Set up argument parsing"""
-        super().setup_argparse(parser)
-        
         parser.add_argument('domain', help='Target domain to scan')
         parser.add_argument('--check-dnssec', action='store_true',
                           help='Validate DNSSEC configuration')
@@ -90,6 +88,11 @@ class DNSSecurityScanner(BaseTool):
                           help='Run all security checks')
         parser.add_argument('--timeout', type=int, default=5,
                           help='Timeout for DNS queries in seconds')
+        
+        # Framework integration arguments
+        parser.add_argument('--output', help='Output file path for results')
+        parser.add_argument('--framework-mode', action='store_true',
+                          help='Run in framework integration mode')
 
     def run(self, args: argparse.Namespace) -> ToolResult:
         """Run the security checks"""
@@ -97,7 +100,17 @@ class DNSSecurityScanner(BaseTool):
             success=True,
             tool_name=self.name,
             findings=[],
-            metadata={"domain": args.domain}
+            metadata={
+                "domain": args.domain,
+                "timestamp": datetime.now().isoformat(),
+                "framework_mode": args.framework_mode if hasattr(args, 'framework_mode') else False,
+                "checks": {
+                    "dnssec": args.check_all or args.check_dnssec,
+                    "zone_transfer": args.check_all or args.check_zone_transfer,
+                    "cache_poisoning": args.check_all or args.check_cache_poisoning,
+                    "open_resolver": args.check_all or args.check_open_resolver
+                }
+            }
         )
         
         try:
@@ -120,6 +133,8 @@ class DNSSecurityScanner(BaseTool):
                 result.add_error("No nameservers found for domain")
                 return result
             
+            result.metadata["nameservers"] = nameservers
+            
             # Run security checks
             if checks['dnssec']:
                 self._check_dnssec(result)
@@ -129,6 +144,31 @@ class DNSSecurityScanner(BaseTool):
                 self._check_cache_poisoning(result, nameservers)
             if checks['open_resolver']:
                 self._check_open_resolver(result, nameservers)
+            
+            # Add risk summary for framework integration
+            if hasattr(args, 'framework_mode') and args.framework_mode:
+                risk_summary = {
+                    'Critical': 0,
+                    'High': 0,
+                    'Medium': 0,
+                    'Low': 0,
+                    'Info': 0
+                }
+                for finding in result.findings:
+                    risk_summary[finding.get('risk_level', 'Info')] += 1
+                result.metadata['risk_summary'] = risk_summary
+            
+            # Handle output file if specified
+            if hasattr(args, 'output') and args.output:
+                try:
+                    output_dir = os.path.dirname(args.output)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    
+                    with open(args.output, 'w') as f:
+                        json.dump(result.to_dict(), f, indent=2)
+                except Exception as e:
+                    result.add_error(f"Error writing output file: {str(e)}")
             
             return result
             
@@ -153,7 +193,7 @@ class DNSSecurityScanner(BaseTool):
                         title="Nameserver Resolution Error",
                         description=f"Could not resolve IP for nameserver {ns_name}",
                         risk_level="Medium",
-                        evidence=str(e)
+                        evidence=json.dumps({"error": str(e)}, indent=2)
                     )
             
             return nameservers
@@ -181,7 +221,11 @@ class DNSSecurityScanner(BaseTool):
                 result.add_finding(
                     title="Incomplete DNSSEC Configuration",
                     description=f"Missing DNSSEC records: {', '.join(missing_records)}",
-                    risk_level="High"
+                    risk_level="High",
+                    evidence=json.dumps({
+                        "missing_records": missing_records,
+                        "found_records": found_records
+                    }, indent=2)
                 )
             
             # Check DNSKEY algorithms if present
@@ -196,20 +240,27 @@ class DNSSecurityScanner(BaseTool):
                                 title="Deprecated DNSSEC Algorithm",
                                 description=f"Using deprecated algorithm {algorithm}",
                                 risk_level="High",
-                                evidence=f"DNSKEY record: {dnskey}"
+                                evidence=json.dumps({
+                                    "algorithm": algorithm,
+                                    "dnskey": str(dnskey)
+                                }, indent=2)
                             )
                         elif algorithm not in self.security_checks['dnssec']['algorithms']['recommended']:
                             result.add_finding(
                                 title="Non-recommended DNSSEC Algorithm",
                                 description=f"Using non-recommended algorithm {algorithm}",
                                 risk_level="Medium",
-                                evidence=f"DNSKEY record: {dnskey}"
+                                evidence=json.dumps({
+                                    "algorithm": algorithm,
+                                    "dnskey": str(dnskey)
+                                }, indent=2)
                             )
                 except Exception as e:
                     result.add_finding(
                         title="DNSKEY Analysis Error",
                         description=f"Error analyzing DNSKEY records: {str(e)}",
-                        risk_level="Medium"
+                        risk_level="Medium",
+                        evidence=json.dumps({"error": str(e)}, indent=2)
                     )
             
             # Verify DNSSEC chain of trust
@@ -221,13 +272,15 @@ class DNSSecurityScanner(BaseTool):
                     result.add_finding(
                         title="DNSSEC Validation Failed",
                         description="Response not authenticated by DNSSEC",
-                        risk_level="High"
+                        risk_level="High",
+                        evidence=json.dumps({"response": str(response)}, indent=2)
                     )
             except Exception as e:
                 result.add_finding(
                     title="DNSSEC Validation Error",
                     description=f"Error validating DNSSEC chain: {str(e)}",
-                    risk_level="High"
+                    risk_level="High",
+                    evidence=json.dumps({"error": str(e)}, indent=2)
                 )
                 
         except Exception as e:
@@ -247,7 +300,12 @@ class DNSSecurityScanner(BaseTool):
                             title="Zone Transfer Allowed",
                             description=f"Nameserver {ns}:{port} allows zone transfers",
                             risk_level="Critical",
-                            evidence=f"Successfully transferred zone with {len(zone.nodes)} records"
+                            evidence=json.dumps({
+                                "nameserver": ns,
+                                "port": port,
+                                "zone_transfer_allowed": True,
+                                "zone_records": len(zone.nodes)
+                            }, indent=2)
                         )
                 except dns.xfr.TransferError:
                     # This is actually good - transfer was rejected
@@ -258,7 +316,7 @@ class DNSSecurityScanner(BaseTool):
                             title="Zone Transfer Test Error",
                             description=f"Error testing zone transfer on {ns}:{port}",
                             risk_level="Info",
-                            evidence=str(e)
+                            evidence=json.dumps({"error": str(e)}, indent=2)
                         )
 
     def _check_cache_poisoning(self, result: ToolResult, nameservers: List[str]) -> None:
@@ -296,7 +354,11 @@ class DNSSecurityScanner(BaseTool):
                         title="Predictable Source Ports",
                         description=f"Nameserver {ns} uses predictable source ports",
                         risk_level="High",
-                        evidence=f"Only {len(ports)} unique ports used in {self.security_checks['cache_poisoning']['test_queries']} queries"
+                        evidence=json.dumps({
+                            "ports": list(ports),
+                            "test_queries": self.security_checks['cache_poisoning']['test_queries'],
+                            "unique_ports": len(ports)
+                        }, indent=2)
                     )
                 
                 if len(query_ids) < self.security_checks['cache_poisoning']['test_queries']:
@@ -304,7 +366,11 @@ class DNSSecurityScanner(BaseTool):
                         title="Predictable Query IDs",
                         description=f"Nameserver {ns} uses predictable query IDs",
                         risk_level="High",
-                        evidence=f"Only {len(query_ids)} unique query IDs used in {self.security_checks['cache_poisoning']['test_queries']} queries"
+                        evidence=json.dumps({
+                            "query_ids": list(query_ids),
+                            "test_queries": self.security_checks['cache_poisoning']['test_queries'],
+                            "unique_query_ids": len(query_ids)
+                        }, indent=2)
                     )
                     
             except Exception as e:
@@ -312,7 +378,7 @@ class DNSSecurityScanner(BaseTool):
                     title="Cache Poisoning Test Error",
                     description=f"Error testing cache poisoning on {ns}",
                     risk_level="Medium",
-                    evidence=str(e)
+                    evidence=json.dumps({"error": str(e)}, indent=2)
                 )
 
     def _check_open_resolver(self, result: ToolResult, nameservers: List[str]) -> None:
@@ -330,7 +396,11 @@ class DNSSecurityScanner(BaseTool):
                         title="Open DNS Resolver",
                         description=f"Nameserver {ns} appears to be an open resolver",
                         risk_level="High",
-                        evidence=f"Successfully resolved {test_domain}"
+                        evidence=json.dumps({
+                            "nameserver": ns,
+                            "test_domain": test_domain,
+                            "response": str(response)
+                        }, indent=2)
                     )
                     
                     # Additional check for rate limiting
@@ -347,7 +417,10 @@ class DNSSecurityScanner(BaseTool):
                                 title="No Query Rate Limiting",
                                 description=f"Nameserver {ns} does not implement query rate limiting",
                                 risk_level="High",
-                                evidence=f"Processed {query_count} queries in 1 second"
+                                evidence=json.dumps({
+                                    "nameserver": ns,
+                                    "query_count": query_count
+                                }, indent=2)
                             )
                     except:
                         pass
@@ -358,13 +431,24 @@ class DNSSecurityScanner(BaseTool):
                         title="Open Resolver Test Error",
                         description=f"Error testing open resolver on {ns}",
                         risk_level="Info",
-                        evidence=str(e)
+                        evidence=json.dumps({"error": str(e)}, indent=2)
                     )
 
 def main():
+    """Main function for standalone usage"""
     tool = DNSSecurityScanner()
-    result = tool.main()
-    return result['status'] if result and 'status' in result else 'error'
+    parser = argparse.ArgumentParser(description=tool.description)
+    tool.setup_argparse(parser)
+    args = parser.parse_args()
+    
+    result = tool.run(args)
+    
+    if args.output:
+        print(f"Results written to {args.output}")
+    else:
+        print(json.dumps(result.to_dict(), indent=2))
+    
+    sys.exit(0 if result.success else 1)
 
 if __name__ == "__main__":
-    sys.exit(0 if main() == 'success' else 1) 
+    main() 

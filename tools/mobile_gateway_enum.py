@@ -37,12 +37,11 @@ from rich import print as rprint
 import ipaddress
 import struct
 
-# Handle imports for framework integration
 try:
-    from .framework_tool_template import FrameworkTool, ToolResult
+    from .base_tool import BaseTool, ToolResult
 except ImportError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tools.framework_tool_template import FrameworkTool, ToolResult
+    from tools.base_tool import BaseTool, ToolResult
 
 # Suppress SSL warnings
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
@@ -74,7 +73,7 @@ class GatewayResult:
             'evidence': self.evidence
         }
 
-class MobileGatewayEnumerator(FrameworkTool):
+class MobileGatewayEnumerator(BaseTool):
     """Mobile Gateway Enumeration Tool"""
     
     def __init__(self):
@@ -89,6 +88,7 @@ class MobileGatewayEnumerator(FrameworkTool):
         self.port_list = None
         self.scan_timeout = 5
         self.protocol_tests = True
+        self.console = Console()
         
         # Initialize results structure
         self.scan_results = {
@@ -100,7 +100,8 @@ class MobileGatewayEnumerator(FrameworkTool):
                     'Critical': 0,
                     'High': 0,
                     'Medium': 0,
-                    'Low': 0
+                    'Low': 0,
+                    'Info': 0
                 },
                 'timestamp': datetime.now().isoformat()
             },
@@ -123,12 +124,8 @@ class MobileGatewayEnumerator(FrameworkTool):
             'PCRF': [3868, 8080]         # Diameter, REST
         }
     
-    def setup_tool_arguments(self, parser: Union[argparse.ArgumentParser, argparse._ArgumentGroup]) -> None:
-        """Set up tool-specific arguments"""
-        # Add framework integration arguments first
-        super().setup_tool_arguments(parser)
-        
-        # Add tool-specific arguments
+    def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
+        """Set up argument parsing"""
         parser.add_argument("target", help="Target IP, range (x.x.x.x-y.y.y.y), or CIDR")
         parser.add_argument("--gateway-type", choices=["GGSN", "P-GW", "S-GW", "MME", "SGSN", "HSS", "PCRF", "all"],
                           default="all", help="Specific gateway type to test")
@@ -139,9 +136,29 @@ class MobileGatewayEnumerator(FrameworkTool):
                           help="Scan timeout in seconds")
         parser.add_argument("--no-protocol-tests", action="store_true",
                           help="Skip protocol-specific tests")
+        
+        # Framework integration arguments
+        parser.add_argument('--output', help='Output file path for results')
+        parser.add_argument('--framework-mode', action='store_true',
+                          help='Run in framework integration mode')
     
-    def execute_tool(self, args: argparse.Namespace, result: ToolResult) -> None:
+    def run(self, args: argparse.Namespace) -> ToolResult:
         """Execute the mobile gateway enumeration"""
+        result = ToolResult(
+            success=True,
+            tool_name=self.name,
+            findings=[],
+            metadata={
+                "target": args.target,
+                "gateway_type": args.gateway_type,
+                "threads": args.threads,
+                "timeout": args.timeout,
+                "protocol_tests": not args.no_protocol_tests,
+                "timestamp": datetime.now().isoformat(),
+                "framework_mode": args.framework_mode if hasattr(args, 'framework_mode') else False
+            }
+        )
+        
         try:
             # Store configuration
             self.target = args.target
@@ -156,21 +173,10 @@ class MobileGatewayEnumerator(FrameworkTool):
                     self.port_list = [int(p) for p in args.ports.split(',')]
                 except ValueError:
                     result.add_error("Invalid port specification. Use comma-separated list of port numbers.")
-                    return
-            
-            # Update metadata
-            result.metadata.update({
-                "target": self.target,
-                "gateway_type": self.gateway_type,
-                "threads": self.threads,
-                "timeout": self.scan_timeout,
-                "protocol_tests": self.protocol_tests,
-                "ports": self.port_list if self.port_list else "default",
-                "timestamp": datetime.now().isoformat()
-            })
+                    return result
             
             # Display banner if not in framework mode
-            if not self.framework_mode:
+            if not hasattr(args, 'framework_mode') or not args.framework_mode:
                 self._print_banner()
             
             # Run the scan
@@ -190,36 +196,53 @@ class MobileGatewayEnumerator(FrameworkTool):
                         *gateway.evidence
                     ])
                     
-                    self.add_common_finding(
-                        result,
+                    result.add_finding(
                         title=finding_title,
                         description=finding_desc,
                         risk_level=gateway.risk_level,
                         evidence=finding_evidence
                     )
                     
-                    # Add vulnerability findings
+                    # Add vulnerabilities as separate findings
                     for vuln in gateway.vulnerabilities:
-                        self.add_common_finding(
-                            result,
-                            title=vuln.get('name', 'Vulnerability'),
-                            description=vuln.get('description', 'No description'),
-                            risk_level=vuln.get('risk', 'Low'),
-                            evidence=vuln.get('evidence', 'No evidence')
+                        result.add_finding(
+                            title=f"Vulnerability: {vuln['name']}",
+                            description=vuln['description'],
+                            risk_level=vuln['risk_level'],
+                            evidence=json.dumps(vuln.get('details', {}), indent=2)
                         )
             
-            # Add scan summary to metadata
-            self.scan_results['scan_summary']['timestamp'] = datetime.now().isoformat()
-            result.metadata['scan_summary'] = self.scan_results['scan_summary']
+            # Add risk summary for framework integration
+            if hasattr(args, 'framework_mode') and args.framework_mode:
+                risk_summary = {
+                    'Critical': 0,
+                    'High': 0,
+                    'Medium': 0,
+                    'Low': 0,
+                    'Info': 0
+                }
+                for finding in result.findings:
+                    risk_summary[finding.get('risk_level', 'Info')] += 1
+                result.metadata['risk_summary'] = risk_summary
             
-            # Set success status
-            result.success = True
+            # Handle output file if specified
+            if hasattr(args, 'output') and args.output:
+                try:
+                    output_dir = os.path.dirname(args.output)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    
+                    with open(args.output, 'w') as f:
+                        json.dump(result.to_dict(), f, indent=2)
+                except Exception as e:
+                    result.add_error(f"Error writing output file: {str(e)}")
+            
+            return result
             
         except Exception as e:
             result.success = False
-            result.add_error(f"Error during gateway enumeration: {str(e)}")
-            if not self.framework_mode:
-                self.logger.error(f"Error: {str(e)}")
+            result.add_error(f"Error during enumeration: {str(e)}")
+            return result
 
     def _print_banner(self):
         """Print tool banner when running in standalone mode"""
@@ -650,12 +673,19 @@ class MobileGatewayEnumerator(FrameworkTool):
         return [socket.inet_ntoa(struct.pack('>I', i)) for i in range(start, end + 1)]
 
 def main():
-    """Main entry point for the tool"""
+    """Main function for standalone usage"""
     tool = MobileGatewayEnumerator()
     parser = argparse.ArgumentParser(description=tool.description)
     tool.setup_argparse(parser)
     args = parser.parse_args()
+    
     result = tool.run(args)
+    
+    if args.output:
+        print(f"Results written to {args.output}")
+    else:
+        print(json.dumps(result.to_dict(), indent=2))
+    
     sys.exit(0 if result.success else 1)
 
 if __name__ == "__main__":

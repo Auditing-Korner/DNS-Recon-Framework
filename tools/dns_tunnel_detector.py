@@ -11,6 +11,7 @@ import re
 import time
 import sys
 import os
+import json
 import argparse
 from collections import defaultdict, deque
 from typing import Dict, List, Set, Tuple, Optional
@@ -30,15 +31,16 @@ class DNSTunnelDetector(BaseTool):
     
     def __init__(self):
         """Initialize the DNS Tunnel Detector."""
-        super().__init__("tunnel_detector", "Detect DNS Tunneling and Data Exfiltration")
+        super().__init__(
+            name="tunnel-detector",
+            description="Detect DNS Tunneling and Data Exfiltration"
+        )
         self.query_history = deque(maxlen=10000)  # Will be updated from config
         self.known_tunnels: Set[str] = set()
         self.signatures = []
         
     def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
         """Set up argument parsing for the tool."""
-        super().setup_argparse(parser)
-        
         parser.add_argument('--pcap',
                           help='PCAP file to analyze')
         parser.add_argument('--query',
@@ -53,6 +55,11 @@ class DNSTunnelDetector(BaseTool):
                           help='Disable pattern matching')
         parser.add_argument('--no-signature', action='store_true',
                           help='Disable signature-based detection')
+        
+        # Framework integration arguments
+        parser.add_argument('--output', help='Output file path for results')
+        parser.add_argument('--framework-mode', action='store_true',
+                          help='Run in framework integration mode')
         
     def check_dependencies(self) -> Tuple[bool, Optional[str]]:
         """Check if required dependencies are available."""
@@ -75,33 +82,40 @@ class DNSTunnelDetector(BaseTool):
 
     def run(self, args: argparse.Namespace) -> ToolResult:
         """Run the tunnel detection analysis."""
-        tool_result = ToolResult(
+        result = ToolResult(
             success=True,
             tool_name=self.name,
             findings=[],
-            metadata={}
+            metadata={
+                "timestamp": datetime.now().isoformat(),
+                "framework_mode": args.framework_mode if hasattr(args, 'framework_mode') else False,
+                "detection_methods": {
+                    "statistical": not args.no_statistical,
+                    "entropy": not args.no_entropy,
+                    "pattern_matching": not args.no_pattern,
+                    "signature_based": not args.no_signature
+                }
+            }
         )
 
         try:
+            # Check dependencies
+            deps_ok, error_msg = self.check_dependencies()
+            if not deps_ok:
+                result.add_error(error_msg)
+                return result
+            
             # Load configuration and signatures
             self._load_config()
-            
-            # Configure detection methods
-            detection_methods = {
-                'statistical': not args.no_statistical,
-                'entropy': not args.no_entropy,
-                'pattern_matching': not args.no_pattern,
-                'signature_based': not args.no_signature
-            }
             
             if args.pcap:
                 # Analyze PCAP file
                 results = self.analyze_pcap(args.pcap)
                 
                 if results.get('error'):
-                    tool_result.add_error(results['error'])
+                    result.add_error(results['error'])
                 else:
-                    tool_result.metadata.update({
+                    result.metadata.update({
                         'analyzed_queries': results['analyzed_queries'],
                         'tunnel_detected': results['tunnel_detected']
                     })
@@ -109,13 +123,13 @@ class DNSTunnelDetector(BaseTool):
                     if results['detections']:
                         for detection in results['detections']:
                             confidence = detection['confidence']
-                            severity = self._get_severity_from_confidence(confidence)
+                            risk_level = self._get_severity_from_confidence(confidence)
                             
-                            tool_result.add_finding(
-                                "DNS Tunnel Detected",
-                                severity,
-                                f"Detected potential DNS tunneling (confidence: {confidence:.2f})",
-                                {
+                            result.add_finding(
+                                title="DNS Tunnel Detected",
+                                description=f"Detected potential DNS tunneling (confidence: {confidence:.2f})",
+                                risk_level=risk_level.capitalize(),
+                                evidence=json.dumps({
                                     'query': detection['query'],
                                     'qtype': detection['qtype'],
                                     'indicators': {
@@ -124,11 +138,11 @@ class DNSTunnelDetector(BaseTool):
                                         'patterns': detection['pattern_matches'],
                                         'signatures': detection['signature_matches']
                                     }
-                                }
+                                }, indent=2)
                             )
-                            
+                    
                     # Add summary to metadata
-                    tool_result.metadata['summary'] = results['summary']
+                    result.metadata['summary'] = results['summary']
                     
             elif args.query:
                 # Analyze single query
@@ -136,13 +150,13 @@ class DNSTunnelDetector(BaseTool):
                 
                 if results['is_tunnel']:
                     confidence = results['confidence']
-                    severity = self._get_severity_from_confidence(confidence)
+                    risk_level = self._get_severity_from_confidence(confidence)
                     
-                    tool_result.add_finding(
-                        "DNS Tunnel Detected",
-                        severity,
-                        f"Query matches tunnel characteristics (confidence: {confidence:.2f})",
-                        {
+                    result.add_finding(
+                        title="DNS Tunnel Detected",
+                        description=f"Query matches tunnel characteristics (confidence: {confidence:.2f})",
+                        risk_level=risk_level.capitalize(),
+                        evidence=json.dumps({
                             'query': results['query'],
                             'qtype': results['qtype'],
                             'indicators': {
@@ -151,17 +165,42 @@ class DNSTunnelDetector(BaseTool):
                                 'patterns': results['pattern_matches'],
                                 'signatures': results['signature_matches']
                             }
-                        }
+                        }, indent=2)
                     )
             else:
-                tool_result.add_error("No input specified. Use --pcap or --query")
-                
-            return tool_result
+                result.add_error("No input specified. Use --pcap or --query")
+            
+            # Add risk summary for framework integration
+            if hasattr(args, 'framework_mode') and args.framework_mode:
+                risk_summary = {
+                    'Critical': 0,
+                    'High': 0,
+                    'Medium': 0,
+                    'Low': 0,
+                    'Info': 0
+                }
+                for finding in result.findings:
+                    risk_summary[finding.get('risk_level', 'Info')] += 1
+                result.metadata['risk_summary'] = risk_summary
+            
+            # Handle output file if specified
+            if hasattr(args, 'output') and args.output:
+                try:
+                    output_dir = os.path.dirname(args.output)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    
+                    with open(args.output, 'w') as f:
+                        json.dump(result.to_dict(), f, indent=2)
+                except Exception as e:
+                    result.add_error(f"Error writing output file: {str(e)}")
+            
+            return result
 
         except Exception as e:
-            tool_result.success = False
-            tool_result.add_error(f"Error during tunnel detection: {str(e)}")
-            return tool_result
+            result.success = False
+            result.add_error(f"Error during tunnel detection: {str(e)}")
+            return result
 
     def _load_config(self) -> None:
         """Load configuration from framework config."""
@@ -184,13 +223,13 @@ class DNSTunnelDetector(BaseTool):
     def _get_severity_from_confidence(self, confidence: float) -> str:
         """Convert confidence score to severity level."""
         if confidence >= 0.9:
-            return "critical"
+            return "Critical"
         elif confidence >= 0.7:
-            return "high"
+            return "High"
         elif confidence >= 0.5:
-            return "medium"
+            return "Medium"
         else:
-            return "low"
+            return "Low"
 
     def _load_signatures(self) -> List[Dict]:
         """Load tunnel signatures from configuration."""
@@ -492,6 +531,21 @@ class DNSTunnelDetector(BaseTool):
         
         return summary
 
-if __name__ == '__main__':
+def main():
+    """Main function for standalone usage"""
     tool = DNSTunnelDetector()
-    tool.main() 
+    parser = argparse.ArgumentParser(description=tool.description)
+    tool.setup_argparse(parser)
+    args = parser.parse_args()
+    
+    result = tool.run(args)
+    
+    if args.output:
+        print(f"Results written to {args.output}")
+    else:
+        print(json.dumps(result.to_dict(), indent=2))
+    
+    sys.exit(0 if result.success else 1)
+
+if __name__ == "__main__":
+    main() 

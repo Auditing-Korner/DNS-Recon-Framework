@@ -199,15 +199,13 @@ class DNSEnumerator(BaseTool):
     
     def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
         """Set up argument parsing"""
-        super().setup_argparse(parser)
-        
         parser.add_argument('domain', help='Target domain to enumerate')
         parser.add_argument('--check-dnssec', action='store_true',
                           help='Check DNSSEC configuration')
         parser.add_argument('--check-zone-transfer', action='store_true',
                           help='Test for zone transfer vulnerabilities')
         parser.add_argument('--check-smtp', action='store_true',
-                          help='Check SMTP security configuration')
+                          help='Check SMTP security')
         parser.add_argument('--check-headers', action='store_true',
                           help='Check security headers')
         parser.add_argument('--check-takeover', action='store_true',
@@ -216,14 +214,30 @@ class DNSEnumerator(BaseTool):
                           help='Run all checks')
         parser.add_argument('--timeout', type=int, default=5,
                           help='Timeout for DNS queries in seconds')
-    
+        
+        # Framework integration arguments
+        parser.add_argument('--output', help='Output file path for results')
+        parser.add_argument('--framework-mode', action='store_true',
+                          help='Run in framework integration mode')
+
     def run(self, args: argparse.Namespace) -> ToolResult:
-        """Run the enumeration"""
+        """Run the DNS enumeration"""
         result = ToolResult(
             success=True,
             tool_name=self.name,
             findings=[],
-            metadata={"domain": args.domain}
+            metadata={
+                "domain": args.domain,
+                "timestamp": datetime.now().isoformat(),
+                "framework_mode": args.framework_mode if hasattr(args, 'framework_mode') else False,
+                "checks": {
+                    "dnssec": args.check_all or args.check_dnssec,
+                    "zone_transfer": args.check_all or args.check_zone_transfer,
+                    "smtp": args.check_all or args.check_smtp,
+                    "headers": args.check_all or args.check_headers,
+                    "takeover": args.check_all or args.check_takeover
+                }
+            }
         )
         
         try:
@@ -231,30 +245,45 @@ class DNSEnumerator(BaseTool):
             self.resolver.timeout = args.timeout
             self.resolver.lifetime = args.timeout
             
-            # Determine which checks to run
-            run_all = args.check_all
-            checks = {
-                'dnssec': run_all or args.check_dnssec,
-                'zone_transfer': run_all or args.check_zone_transfer,
-                'smtp': run_all or args.check_smtp,
-                'headers': run_all or args.check_headers,
-                'takeover': run_all or args.check_takeover
-            }
-            
-            # Run basic enumeration first
+            # Always enumerate basic records
             self._enumerate_records(result)
             
             # Run selected checks
-            if checks['dnssec']:
+            if args.check_all or args.check_dnssec:
                 self._check_dnssec(result)
-            if checks['zone_transfer']:
+            if args.check_all or args.check_zone_transfer:
                 self._check_zone_transfer(result)
-            if checks['smtp']:
+            if args.check_all or args.check_smtp:
                 self._check_smtp_security(result)
-            if checks['headers']:
+            if args.check_all or args.check_headers:
                 self._check_security_headers(result)
-            if checks['takeover']:
+            if args.check_all or args.check_takeover:
                 self._check_takeover_vulnerabilities(result)
+            
+            # Add risk summary for framework integration
+            if hasattr(args, 'framework_mode') and args.framework_mode:
+                risk_summary = {
+                    'Critical': 0,
+                    'High': 0,
+                    'Medium': 0,
+                    'Low': 0,
+                    'Info': 0
+                }
+                for finding in result.findings:
+                    risk_summary[finding.get('risk_level', 'Info')] += 1
+                result.metadata['risk_summary'] = risk_summary
+            
+            # Handle output file if specified
+            if hasattr(args, 'output') and args.output:
+                try:
+                    output_dir = os.path.dirname(args.output)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    
+                    with open(args.output, 'w') as f:
+                        json.dump(result.to_dict(), f, indent=2)
+                except Exception as e:
+                    result.add_error(f"Error writing output file: {str(e)}")
             
             return result
             
@@ -543,9 +572,21 @@ class DNSEnumerator(BaseTool):
             result.add_error(f"Error checking takeover vulnerabilities: {str(e)}")
 
 def main():
+    """Main function for standalone usage"""
     tool = DNSEnumerator()
-    return tool.main()
+    parser = argparse.ArgumentParser(description=tool.description)
+    tool.setup_argparse(parser)
+    args = parser.parse_args()
+    
+    result = tool.run(args)
+    
+    if args.output:
+        print(f"Results written to {args.output}")
+    else:
+        print(json.dumps(result.to_dict(), indent=2))
+    
+    sys.exit(0 if result.success else 1)
 
 if __name__ == "__main__":
-    sys.exit(0 if main() == 'success' else 1)
+    main()
         

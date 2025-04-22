@@ -25,8 +25,10 @@ import sys
 import os
 import random
 import time
+import json
 from typing import Dict, List, Optional, Set, Tuple
 from datetime import datetime
+from pathlib import Path
 
 try:
     from .base_tool import BaseTool, ToolResult
@@ -73,8 +75,6 @@ class DNSProtocolFuzzer(BaseTool):
 
     def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
         """Set up argument parsing"""
-        super().setup_argparse(parser)
-        
         parser.add_argument('domain', help='Target domain to fuzz')
         parser.add_argument('--nameserver', help='Specific nameserver to test')
         parser.add_argument('--timeout', type=int, default=2,
@@ -93,6 +93,11 @@ class DNSProtocolFuzzer(BaseTool):
                           help='Run all fuzzing tests')
         parser.add_argument('--parallel', type=int, default=5,
                           help='Number of parallel fuzzing threads')
+        
+        # Framework integration arguments
+        parser.add_argument('--output', help='Output file path for results')
+        parser.add_argument('--framework-mode', action='store_true',
+                          help='Run in framework integration mode')
 
     def run(self, args: argparse.Namespace) -> ToolResult:
         """Run the fuzzing tests"""
@@ -100,7 +105,18 @@ class DNSProtocolFuzzer(BaseTool):
             success=True,
             tool_name=self.name,
             findings=[],
-            metadata={"domain": args.domain}
+            metadata={
+                "domain": args.domain,
+                "timestamp": datetime.now().isoformat(),
+                "framework_mode": args.framework_mode if hasattr(args, 'framework_mode') else False,
+                "fuzz_config": {
+                    "types": args.fuzz_all or args.fuzz_types,
+                    "labels": args.fuzz_all or args.fuzz_labels,
+                    "compression": args.fuzz_all or args.fuzz_compression,
+                    "edns": args.fuzz_all or args.fuzz_edns,
+                    "malformed": args.fuzz_all or args.fuzz_malformed
+                }
+            }
         )
         
         try:
@@ -174,6 +190,31 @@ class DNSProtocolFuzzer(BaseTool):
                 
                 # Wait for all tests to complete
                 concurrent.futures.wait(futures)
+            
+            # Add risk summary for framework integration
+            if hasattr(args, 'framework_mode') and args.framework_mode:
+                risk_summary = {
+                    'Critical': 0,
+                    'High': 0,
+                    'Medium': 0,
+                    'Low': 0,
+                    'Info': 0
+                }
+                for finding in result.findings:
+                    risk_summary[finding.get('risk_level', 'Info')] += 1
+                result.metadata['risk_summary'] = risk_summary
+            
+            # Handle output file if specified
+            if hasattr(args, 'output') and args.output:
+                try:
+                    output_dir = os.path.dirname(args.output)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    
+                    with open(args.output, 'w') as f:
+                        json.dump(result.to_dict(), f, indent=2)
+                except Exception as e:
+                    result.add_error(f"Error writing output file: {str(e)}")
             
             return result
             
@@ -351,8 +392,20 @@ class DNSProtocolFuzzer(BaseTool):
                 )
 
 def main():
+    """Main function for standalone usage"""
     tool = DNSProtocolFuzzer()
-    return tool.main()
+    parser = argparse.ArgumentParser(description=tool.description)
+    tool.setup_argparse(parser)
+    args = parser.parse_args()
+    
+    result = tool.run(args)
+    
+    if args.output:
+        print(f"Results written to {args.output}")
+    else:
+        print(json.dumps(result.to_dict(), indent=2))
+    
+    sys.exit(0 if result.success else 1)
 
 if __name__ == "__main__":
-    sys.exit(0 if main() == 'success' else 1) 
+    main() 

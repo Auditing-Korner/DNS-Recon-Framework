@@ -14,7 +14,9 @@ from typing import List, Dict, Optional, Set, Tuple
 import yaml
 import os
 import sys
+import json
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 # Handle imports for framework integration
@@ -29,7 +31,10 @@ class DNSZoneWalker(BaseTool):
     
     def __init__(self):
         """Initialize the DNS Zone Walker."""
-        super().__init__("zone_walker", "DNSSEC Zone Walking and NSEC/NSEC3 Analysis")
+        super().__init__(
+            name="zone-walker",
+            description="DNSSEC Zone Walking and NSEC/NSEC3 Analysis"
+        )
         self.known_names: Set[str] = set()
         self.nsec3_salt = None
         self.nsec3_iterations = 0
@@ -37,8 +42,6 @@ class DNSZoneWalker(BaseTool):
         
     def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
         """Set up argument parsing for the tool."""
-        super().setup_argparse(parser)
-        
         parser.add_argument('domain', help='Target domain to walk')
         parser.add_argument('--no-nsec', action='store_true',
                           help='Disable NSEC walking')
@@ -53,6 +56,11 @@ class DNSZoneWalker(BaseTool):
         parser.add_argument('--timeout', type=int, default=5,
                           help='Timeout for DNS queries in seconds')
         
+        # Framework integration arguments
+        parser.add_argument('--output', help='Output file path for results')
+        parser.add_argument('--framework-mode', action='store_true',
+                          help='Run in framework integration mode')
+        
     def check_dependencies(self) -> Tuple[bool, Optional[str]]:
         """Check if required dependencies are available."""
         try:
@@ -65,14 +73,31 @@ class DNSZoneWalker(BaseTool):
 
     def run(self, args: argparse.Namespace) -> ToolResult:
         """Run the zone walking analysis."""
-        tool_result = ToolResult(
+        result = ToolResult(
             success=True,
             tool_name=self.name,
             findings=[],
-            metadata={"domain": args.domain}
+            metadata={
+                "domain": args.domain,
+                "timestamp": datetime.now().isoformat(),
+                "framework_mode": args.framework_mode if hasattr(args, 'framework_mode') else False,
+                "configuration": {
+                    "nsec_enabled": not args.no_nsec,
+                    "nsec3_enabled": not args.no_nsec3,
+                    "zone_transfer_enabled": not args.no_zone_transfer,
+                    "threads": args.threads,
+                    "timeout": args.timeout
+                }
+            }
         )
 
         try:
+            # Check dependencies
+            deps_ok, error_msg = self.check_dependencies()
+            if not deps_ok:
+                result.add_error(error_msg)
+                return result
+            
             # Load configuration
             self._load_config()
             
@@ -94,39 +119,64 @@ class DNSZoneWalker(BaseTool):
             # Process results
             if results.get('zone_transfer'):
                 if results['zone_transfer']['success']:
-                    tool_result.add_finding(
-                        "Zone Transfer Successful",
-                        "high",
-                        "Zone transfer was successful, exposing zone data",
-                        {"records": results['zone_transfer']['records']}
+                    result.add_finding(
+                        title="Zone Transfer Successful",
+                        description="Zone transfer was successful, exposing zone data",
+                        risk_level="High",
+                        evidence=json.dumps(results['zone_transfer']['records'], indent=2)
                     )
                     
             if results.get('nsec_records'):
-                tool_result.add_finding(
-                    "NSEC Records Found",
-                    "medium",
-                    f"Found {len(results['nsec_records'])} NSEC records",
-                    {"records": results['nsec_records']}
+                result.add_finding(
+                    title="NSEC Records Found",
+                    description=f"Found {len(results['nsec_records'])} NSEC records",
+                    risk_level="Medium",
+                    evidence=json.dumps(results['nsec_records'], indent=2)
                 )
                 
             if results.get('nsec3_records'):
-                tool_result.add_finding(
-                    "NSEC3 Records Found",
-                    "medium",
-                    f"Found {len(results['nsec3_records'])} NSEC3 records",
-                    {"records": results['nsec3_records']}
+                result.add_finding(
+                    title="NSEC3 Records Found",
+                    description=f"Found {len(results['nsec3_records'])} NSEC3 records",
+                    risk_level="Medium",
+                    evidence=json.dumps(results['nsec3_records'], indent=2)
                 )
                 
             if results.get('errors'):
                 for error in results['errors']:
-                    tool_result.add_error(error)
+                    result.add_error(error)
+            
+            # Add risk summary for framework integration
+            if hasattr(args, 'framework_mode') and args.framework_mode:
+                risk_summary = {
+                    'Critical': 0,
+                    'High': 0,
+                    'Medium': 0,
+                    'Low': 0,
+                    'Info': 0
+                }
+                for finding in result.findings:
+                    risk_summary[finding.get('risk_level', 'Info')] += 1
+                result.metadata['risk_summary'] = risk_summary
+            
+            # Handle output file if specified
+            if hasattr(args, 'output') and args.output:
+                try:
+                    output_dir = os.path.dirname(args.output)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
                     
-            return tool_result
+                    with open(args.output, 'w') as f:
+                        json.dump(result.to_dict(), f, indent=2)
+                except Exception as e:
+                    result.add_error(f"Error writing output file: {str(e)}")
+            
+            return result
 
         except Exception as e:
-            tool_result.success = False
-            tool_result.add_error(f"Error during zone walking: {str(e)}")
-            return tool_result
+            result.success = False
+            result.add_error(f"Error during zone walking: {str(e)}")
+            return result
 
     def _load_config(self) -> None:
         """Load configuration from framework config."""
@@ -373,6 +423,21 @@ class DNSZoneWalker(BaseTool):
         except Exception as e:
             self.logger.error(f"Error verifying NSEC3 chain: {str(e)}")
 
-if __name__ == '__main__':
+def main():
+    """Main function for standalone usage"""
     tool = DNSZoneWalker()
-    tool.main() 
+    parser = argparse.ArgumentParser(description=tool.description)
+    tool.setup_argparse(parser)
+    args = parser.parse_args()
+    
+    result = tool.run(args)
+    
+    if args.output:
+        print(f"Results written to {args.output}")
+    else:
+        print(json.dumps(result.to_dict(), indent=2))
+    
+    sys.exit(0 if result.success else 1)
+
+if __name__ == "__main__":
+    main() 

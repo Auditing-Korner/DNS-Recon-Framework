@@ -21,12 +21,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Optional, Tuple, Union
 import signal
 
-# Handle imports for framework integration
 try:
-    from .framework_tool_template import FrameworkTool, ToolResult
+    from .base_tool import BaseTool, ToolResult
 except ImportError:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tools.framework_tool_template import FrameworkTool, ToolResult
+    from tools.base_tool import BaseTool, ToolResult
 
 # Check for scapy
 try:
@@ -51,7 +50,7 @@ def handle_interrupt(signum, frame):
 # Register signal handler
 signal.signal(signal.SIGINT, handle_interrupt)
 
-class DNSCachePoisonScanner(FrameworkTool):
+class DNSCachePoisonScanner(BaseTool):
     """DNS Cache Poisoning Detection and Testing Tool"""
     
     def __init__(self):
@@ -89,12 +88,8 @@ class DNSCachePoisonScanner(FrameworkTool):
             }
         }
 
-    def setup_tool_arguments(self, parser: Union[argparse.ArgumentParser, argparse._ArgumentGroup]) -> None:
-        """Set up tool-specific arguments"""
-        # Add framework integration arguments first
-        super().setup_tool_arguments(parser)
-        
-        # Add tool-specific arguments
+    def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
+        """Set up argument parsing"""
         parser.add_argument('target', help='Target domain to poison')
         parser.add_argument('nameserver', help='DNS server to attack')
         parser.add_argument('spoofed_ip', help='IP address to inject')
@@ -108,63 +103,70 @@ class DNSCachePoisonScanner(FrameworkTool):
                           help='Maximum number of poisoning attempts')
         parser.add_argument('--threads', type=int, default=10,
                           help='Number of parallel threads for poisoning')
+        
+        # Framework integration arguments
+        parser.add_argument('--output', help='Output file path for results')
+        parser.add_argument('--framework-mode', action='store_true',
+                          help='Run in framework integration mode')
 
-    def check_dependencies(self) -> Tuple[bool, Optional[str]]:
-        """Check if required dependencies are available"""
-        if not SCAPY_AVAILABLE:
-            return False, "Scapy is required for DNS packet manipulation"
-        return True, None
-
-    def execute_tool(self, args: argparse.Namespace, result: ToolResult) -> None:
+    def run(self, args: argparse.Namespace) -> ToolResult:
         """Execute the tool with the given arguments"""
-        # Store arguments
-        self.target_domain = args.target
-        self.nameserver = args.nameserver
-        self.spoofed_ip = args.spoofed_ip
-        self.record_type = args.record_type
-        self.mode = args.mode
-        self.duration = args.duration
-        self.max_attempts = args.max_attempts
-        self.threads = args.threads
-        
-        # Update metadata
-        result.metadata.update({
-            'target_domain': self.target_domain,
-            'nameserver': self.nameserver,
-            'record_type': self.record_type,
-            'mode': self.mode,
-            'timestamp': datetime.now().isoformat()
-        })
-        
-        # Display warning if not in framework mode
-        if not self.framework_mode:
-            print("""
-            [!] WARNING: This tool is for educational purposes only.
-            [!] Unauthorized DNS cache poisoning attempts are illegal.
-            [!] Use only on systems you have permission to test.
-            """)
-        
-        # Check permissions
-        if not self._check_admin():
-            error_msg = "This script requires administrator/root privileges"
-            result.add_error(error_msg)
-            return
+        result = ToolResult(
+            success=True,
+            tool_name=self.name,
+            findings=[],
+            metadata={
+                'target_domain': args.target,
+                'nameserver': args.nameserver,
+                'record_type': args.record_type,
+                'mode': args.mode,
+                'timestamp': datetime.now().isoformat(),
+                'framework_mode': args.framework_mode if hasattr(args, 'framework_mode') else False
+            }
+        )
         
         try:
+            # Store arguments
+            self.target_domain = args.target
+            self.nameserver = args.nameserver
+            self.spoofed_ip = args.spoofed_ip
+            self.record_type = args.record_type
+            self.mode = args.mode
+            self.duration = args.duration
+            self.max_attempts = args.max_attempts
+            self.threads = args.threads
+            
+            # Check dependencies
+            deps_ok, error_msg = self.check_dependencies()
+            if not deps_ok:
+                result.add_error(error_msg)
+                return result
+            
+            # Display warning if not in framework mode
+            if not hasattr(args, 'framework_mode') or not args.framework_mode:
+                print("""
+                [!] WARNING: This tool is for educational purposes only.
+                [!] Unauthorized DNS cache poisoning attempts are illegal.
+                [!] Use only on systems you have permission to test.
+                """)
+            
+            # Check permissions
+            if not self._check_admin():
+                result.add_error("This script requires administrator/root privileges")
+                return result
+            
             # Run in appropriate mode
             if self.mode in ['detect', 'both']:
                 vulnerable, message = self.detect_vulnerability()
                 if vulnerable:
-                    self.add_common_finding(
-                        result,
+                    result.add_finding(
                         title=f"DNS Server {self.nameserver} Vulnerable to Cache Poisoning",
                         description=message,
                         risk_level="High",
                         evidence=json.dumps(self.scan_results['vulnerability_checks'], indent=2)
                     )
                 else:
-                    self.add_common_finding(
-                        result,
+                    result.add_finding(
                         title=f"DNS Server {self.nameserver} Not Vulnerable",
                         description=message,
                         risk_level="Info",
@@ -173,7 +175,7 @@ class DNSCachePoisonScanner(FrameworkTool):
             
             if self.mode in ['poison', 'both']:
                 if self.mode == 'both' and not self.scan_results['summary']['is_vulnerable']:
-                    self.logger.warning("Server appears not vulnerable, but proceeding with poisoning attempt as requested...")
+                    result.add_warning("Server appears not vulnerable, but proceeding with poisoning attempt as requested...")
                 
                 poisoning_success = self.poison_cache(
                     duration=self.duration,
@@ -182,27 +184,57 @@ class DNSCachePoisonScanner(FrameworkTool):
                 )
                 
                 if poisoning_success:
-                    self.add_common_finding(
-                        result,
+                    result.add_finding(
                         title=f"DNS Cache Poisoning Successful on {self.nameserver}",
                         description=f"Successfully poisoned cache for {self.target_domain} with {self.spoofed_ip}",
                         risk_level="Critical",
                         evidence=json.dumps(self.scan_results['poisoning_attempts'], indent=2)
                     )
                 else:
-                    self.add_common_finding(
-                        result,
+                    result.add_finding(
                         title=f"DNS Cache Poisoning Failed on {self.nameserver}",
                         description="Unable to poison DNS cache after multiple attempts",
                         risk_level="Info",
                         evidence=json.dumps(self.scan_results['poisoning_attempts'], indent=2)
                     )
             
-            # Update final metadata
-            result.metadata['scan_summary'] = self.scan_results['summary']
+            # Add risk summary for framework integration
+            if hasattr(args, 'framework_mode') and args.framework_mode:
+                risk_summary = {
+                    'Critical': 0,
+                    'High': 0,
+                    'Medium': 0,
+                    'Low': 0,
+                    'Info': 0
+                }
+                for finding in result.findings:
+                    risk_summary[finding.get('risk_level', 'Info')] += 1
+                result.metadata['risk_summary'] = risk_summary
+            
+            # Handle output file if specified
+            if hasattr(args, 'output') and args.output:
+                try:
+                    output_dir = os.path.dirname(args.output)
+                    if output_dir and not os.path.exists(output_dir):
+                        os.makedirs(output_dir)
+                    
+                    with open(args.output, 'w') as f:
+                        json.dump(result.to_dict(), f, indent=2)
+                except Exception as e:
+                    result.add_error(f"Error writing output file: {str(e)}")
+            
+            return result
             
         except Exception as e:
-            result.add_error(f"Error during cache poisoning scan: {str(e)}")
+            result.success = False
+            result.add_error(f"Error during cache poisoning: {str(e)}")
+            return result
+
+    def check_dependencies(self) -> Tuple[bool, Optional[str]]:
+        """Check if required dependencies are available"""
+        if not SCAPY_AVAILABLE:
+            return False, "Scapy is required for DNS packet manipulation"
+        return True, None
 
     def _check_admin(self):
         """Check if the script has admin/root privileges"""
@@ -488,8 +520,20 @@ class DNSCachePoisonScanner(FrameworkTool):
         return successful_attempts > 0
 
 def main():
+    """Main function for standalone usage"""
     tool = DNSCachePoisonScanner()
-    return tool.main()
+    parser = argparse.ArgumentParser(description=tool.description)
+    tool.setup_argparse(parser)
+    args = parser.parse_args()
+    
+    result = tool.run(args)
+    
+    if args.output:
+        print(f"Results written to {args.output}")
+    else:
+        print(json.dumps(result.to_dict(), indent=2))
+    
+    sys.exit(0 if result.success else 1)
 
 if __name__ == "__main__":
     main() 
