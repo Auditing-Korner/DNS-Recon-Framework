@@ -13,169 +13,151 @@ Welcome to the comprehensive documentation for the RFS DNS Framework - a powerfu
 
 ## 🔍 Quick Navigation
 
-- [Getting Started](#getting-started)
 - [Tool Categories](#tool-categories)
-- [Use Cases](#use-cases)
-- [Integration Guide](#integration)
-- [Best Practices](#best-practices)
-- [Contributing](#contributing)
+  - [Core Security Tools](#core-security-tools)
+  - [Enumeration Tools](#enumeration-tools)
+  - [Infrastructure Analysis](#infrastructure-analysis)
+  - [Vulnerability Assessment](#vulnerability-assessment)
+  - [Privacy & Compliance](#privacy--compliance)
+- [Common Tasks](#common-tasks)
+  - [Security Auditing](#security-auditing)
+  - [Compliance Testing](#compliance-testing)
+  - [Incident Response](#incident-response)
+- [Framework Resources](#framework-resources)
+  - [Getting Started](#getting-started)
+  - [Integration Guide](#integration)
+  - [Best Practices](#best-practices)
+  - [Contributing](#contributing)
 
-## Getting Started
+## Tool Categories
 
-Before using any tool, ensure you have:
-1. Python 3.7+ installed
-2. Required dependencies (`pip install -r requirements.txt`)
-3. Proper permissions for privileged operations
-4. Basic understanding of DNS concepts and security testing
+### Core Security Tools
 
-## Core Security Tools
-
-### [DNS Zone Walker](zone_walker.md)
+#### [DNS Zone Walker](zone_walker.md)
 **Keywords**: *DNSSEC, zone enumeration, NSEC walking, zone transfer*
 Advanced zone enumeration using NSEC/NSEC3 records. Ideal for security auditing and zone validation.
-- 🔗 Related: [DNS Enumerator](dns_enum.md), [DNS Server Finder](dns-server-finder.md)
+- 🔗 **Primary Use**: Zone enumeration and DNSSEC validation
+- 🔗 **Related Tools**: 
+  - [DNS Enumerator](dns_enum.md) - For comprehensive DNS record analysis
+  - [DNS Server Finder](dns-server-finder.md) - For discovering authoritative servers
+  - [DNS Record Validator](dns-record-validator.md) - For validating zone records
 
-### [DNS Tunnel Detector](tunnel_detector.md)
+#### [DNS Tunnel Detector](tunnel_detector.md)
 **Keywords**: *DNS tunneling, data exfiltration, traffic analysis, DNS security*
 Detect and analyze DNS tunneling attempts using advanced detection methods.
-- 🔗 Related: [DNS Cache Poisoning](dns-cache-poison.md), [Privacy Scanner](privacy_scanner.md)
+- 🔗 **Primary Use**: Data exfiltration detection
+- 🔗 **Related Tools**:
+  - [DNS Cache Poisoning](dns-cache-poison.md) - For comprehensive security testing
+  - [Privacy Scanner](privacy_scanner.md) - For privacy analysis
+  - [Traffic Analyzer](traffic-analyzer.md) - For detailed packet inspection
 
-### [DNS Cache Poisoning](dns-cache-poison.md)
+#### [DNS Cache Poisoning](dns-cache-poison.md)
 **Keywords**: *cache poisoning, DNS security, DNSSEC, vulnerability testing*
 Comprehensive cache poisoning detection and testing capabilities.
-- 🔗 Related: [SSL Scanner](ssl-scanner.md), [DNS Tunnel Detector](tunnel_detector.md)
+- 🔗 **Primary Use**: Security vulnerability assessment
+- 🔗 **Related Tools**:
+  - [SSL Scanner](ssl-scanner.md) - For cryptographic security testing
+  - [DNS Tunnel Detector](tunnel_detector.md) - For attack detection
+  - [Security Baseline](security-baseline.md) - For security standards compliance
 
-## Enumeration Tools
+### Enumeration Tools
 
-### [DNS Server Finder](dns-server-finder.md)
+#### [DNS Server Finder](dns-server-finder.md)
 **Keywords**: *DNS discovery, server enumeration, infrastructure mapping*
 Discover and analyze DNS servers across networks.
-- 🔗 Related: [DNS Enumerator](dns_enum.md), [Zone Walker](zone_walker.md)
+- 🔗 **Primary Use**: Infrastructure discovery
+- 🔗 **Related Tools**:
+  - [Zone Walker](zone_walker.md) - For zone analysis
+  - [Cloud Enumerator](cloud-enum.md) - For cloud service discovery
+  - [Infrastructure Mapper](infrastructure-mapper.md) - For network mapping
 
-### [TLD Bruteforcer](tld-brute.md)
+#### [TLD Bruteforcer](tld-brute.md)
 **Keywords**: *TLD discovery, domain enumeration, brute force*
 Multi-threaded TLD discovery with pattern matching.
-- 🔗 Related: [DNS Enumerator](dns_enum.md), [DNS Takeover Scanner](dns-takeover.md)
+- 🔗 **Primary Use**: Domain discovery
+- 🔗 **Related Tools**:
+  - [DNS Takeover Scanner](dns-takeover.md) - For vulnerability assessment
+  - [Domain Validator](domain-validator.md) - For domain verification
+  - [Zone Enumerator](zone-enum.md) - For comprehensive zone analysis
 
-## Infrastructure Analysis
+### Infrastructure Analysis
 
-### [Cloud Provider Enumerator](cloud-enum.md)
+#### [Cloud Provider Enumerator](cloud-enum.md)
 **Keywords**: *cloud services, AWS, Azure, GCP, infrastructure discovery*
 Detect and analyze cloud service usage and configuration.
-- 🔗 Related: [Cloud Takeover Detector](cloud-takeover.md), [DNS Takeover Scanner](dns-takeover.md)
+- 🔗 **Primary Use**: Cloud service discovery
+- 🔗 **Related Tools**:
+  - [Cloud Takeover Detector](cloud-takeover.md) - For vulnerability detection
+  - [DNS Takeover Scanner](dns-takeover.md) - For subdomain takeover testing
+  - [Resource Validator](resource-validator.md) - For cloud resource validation
 
-### [Mobile Gateway Enumerator](mobile-gw.md)
+#### [Mobile Gateway Enumerator](mobile-gw.md)
 **Keywords**: *3GPP, mobile networks, gateway detection, infrastructure security*
 Specialized mobile network infrastructure analysis.
-- 🔗 Related: [DNS Server Finder](dns-server-finder.md)
+- 🔗 **Primary Use**: Mobile infrastructure testing
+- 🔗 **Related Tools**:
+  - [DNS Server Finder](dns-server-finder.md) - For server discovery
+  - [Network Analyzer](network-analyzer.md) - For traffic analysis
+  - [Gateway Validator](gateway-validator.md) - For gateway testing
 
-## Use Cases
+## Common Tasks
 
 ### Security Auditing
 1. **DNS Infrastructure Assessment**
-   - Zone enumeration with [DNS Zone Walker](zone_walker.md)
-   - Server discovery using [DNS Server Finder](dns-server-finder.md)
-   - Configuration analysis with [Configuration Auditor](config_auditor.md)
+   - Start with [DNS Zone Walker](zone_walker.md) for zone analysis
+   - Use [DNS Server Finder](dns-server-finder.md) for server discovery
+   - Complete with [Configuration Auditor](config_auditor.md) for compliance
 
 2. **Vulnerability Detection**
-   - Cache poisoning tests with [DNS Cache Poisoning](dns-cache-poison.md)
-   - SSL/TLS analysis using [SSL Scanner](ssl-scanner.md)
-   - Takeover vulnerability scanning with [DNS Takeover Scanner](dns-takeover.md)
+   - Begin with [DNS Cache Poisoning](dns-cache-poison.md) tests
+   - Perform [SSL Scanner](ssl-scanner.md) analysis
+   - Check for takeovers with [DNS Takeover Scanner](dns-takeover.md)
 
 3. **Cloud Security**
-   - Provider enumeration via [Cloud Provider Enumerator](cloud-enum.md)
-   - Takeover detection using [Cloud Takeover Detector](cloud-takeover.md)
-   - Resource validation with [DNS Record Validator](dns-record-validator.md)
+   - Enumerate with [Cloud Provider Enumerator](cloud-enum.md)
+   - Detect issues using [Cloud Takeover Detector](cloud-takeover.md)
+   - Validate with [DNS Record Validator](dns-record-validator.md)
 
-4. **Privacy Assessment**
-   - DNS privacy testing with [Privacy Scanner](privacy_scanner.md)
-   - Tunnel detection via [DNS Tunnel Detector](tunnel_detector.md)
-   - Data exfiltration analysis
+### Incident Response
+1. **Attack Detection**
+   - Monitor with [DNS Tunnel Detector](tunnel_detector.md)
+   - Analyze using [Traffic Analyzer](traffic-analyzer.md)
+   - Validate with [Security Scanner](security-scanner.md)
 
-### Compliance Testing
-1. **Security Standards**
-   - DNSSEC validation
-   - SSL/TLS compliance
-   - Privacy requirements
-
-2. **Best Practices**
-   - Configuration auditing
-   - Security controls verification
-   - Documentation and reporting
+2. **Forensic Analysis**
+   - Collect data with [DNS Logger](dns-logger.md)
+   - Analyze with [Forensic Tools](forensic-tools.md)
+   - Report using [Incident Reporter](incident-reporter.md)
 
 ## Tool Dependencies
 
 ### Required Privileges
-- **Root/Administrator**
-  - DNS Tunnel Detector
-  - DNS Cache Poisoning
-  - Mobile Gateway Enumerator
+- **Root/Administrator Tools**:
+  - [DNS Tunnel Detector](tunnel_detector.md)
+  - [DNS Cache Poisoning](dns-cache-poison.md)
+  - [Mobile Gateway Enumerator](mobile-gw.md)
 
 ### Optional Components
-- **Network Analysis**
-  - Scapy
-  - Wireshark integration
-- **Cryptography**
-  - OpenSSL
-  - cryptography module
-- **HTTP Testing**
-  - Requests
-  - aiohttp
+- **Network Analysis**:
+  - [Traffic Analyzer](traffic-analyzer.md)
+  - [Packet Capture](packet-capture.md)
+- **Cryptography**:
+  - [SSL Scanner](ssl-scanner.md)
+  - [Certificate Validator](cert-validator.md)
 
-## Integration
+## Framework Resources
 
-### Framework Integration
-1. **Command Line**
-   ```bash
-   python rfs_dns_framework.py --tool dns-zone-walker --target example.com
-   ```
-
-2. **Python API**
-   ```python
-   from rfs_dns_framework import DNSZoneWalker
-   walker = DNSZoneWalker()
-   results = walker.scan("example.com")
-   ```
-
-3. **Automation Integration**
-   ```python
-   from rfs_dns_framework import Framework
-   framework = Framework()
-   framework.run_tool("dns-cache-poison", target="example.com")
-   ```
-
-## Best Practices
-
-### Security Considerations
-1. **Authorization**
-   - Obtain proper permissions
-   - Document testing scope
-   - Follow security policies
-
-2. **Resource Usage**
-   - Monitor system resources
-   - Implement rate limiting
-   - Use appropriate thread counts
-
-3. **Data Handling**
-   - Secure storage of results
-   - Proper logging configuration
-   - Clean up temporary files
-
-## Contributing
-
-We welcome contributions! See our [Contributing Guidelines](../contributing.md) for:
-1. Code style requirements
-2. Documentation standards
-3. Testing requirements
-4. Pull request process
-
-## Additional Resources
-
-- [Framework Architecture](../architecture.md)
-- [API Documentation](../api/index.md)
+### Documentation
+- [Architecture Guide](../architecture.md)
+- [API Reference](../api/index.md)
 - [Configuration Guide](../configuration.md)
+- [Development Guide](../development/index.md)
+
+### Support Resources
 - [Troubleshooting Guide](../troubleshooting.md)
+- [FAQ](../faq.md)
+- [Known Issues](../known-issues.md)
+- [Release Notes](../releases/index.md)
 
 ---
 
