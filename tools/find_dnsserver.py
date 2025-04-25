@@ -9,212 +9,143 @@ Discovers and tests DNS servers:
 - Analyze response times and reliability
 """
 
-import argparse
 import dns.resolver
 import dns.query
 import dns.name
 import sys
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
+from .base_tool import BaseTool, ToolResult
 
-try:
-    from .framework_tool_template import FrameworkTool, ToolResult
-except ImportError:
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from tools.framework_tool_template import FrameworkTool, ToolResult
-
-class DNSServerFinder(FrameworkTool):
+class DNSServerFinder(BaseTool):
     """DNS Server Discovery and Testing Tool"""
     
     def __init__(self):
         super().__init__(
-            name="dns-server-finder",
-            description="DNS Server Discovery and Testing Tool"
+            name="find_server",
+            description="DNS Server Discovery and Analysis Tool"
         )
+        self.version = "2.1.0"
         self.resolver = dns.resolver.Resolver()
         self.resolver.timeout = 5
         self.resolver.lifetime = 5
     
-    def setup_tool_arguments(self, parser: argparse.ArgumentParser) -> None:
-        """Set up tool-specific arguments"""
-        parser.add_argument('domain', help='Target domain to analyze')
-        parser.add_argument('-s', '--server', help='Specific DNS server to test')
-        parser.add_argument('-t', '--timeout', type=int, default=5,
-                          help='Query timeout in seconds')
-        parser.add_argument('--top', action='store_true',
-                          help='Test top public DNS servers')
-        parser.add_argument('--nl', action='store_true',
-                          help='Test Netherlands DNS servers')
-        parser.add_argument('--eg', action='store_true',
-                          help='Test Egypt DNS servers')
-        parser.add_argument('--vodafone', action='store_true',
-                          help='Test Vodafone DNS servers')
-        parser.add_argument('--all', action='store_true',
-                          help='Test all known DNS servers')
-        parser.add_argument('--list', type=str,
-                          help='File containing list of DNS servers to test')
-        parser.add_argument('--shuffle', action='store_true',
-                          help='Randomize server testing order')
-        parser.add_argument('--root', action='store_true',
-                          help='Test root DNS servers')
-        parser.add_argument('--aws', action='store_true',
-                          help='Test AWS DNS servers')
-        parser.add_argument('--tcp', action='store_true',
-                          help='Use TCP instead of UDP for queries')
-    
-    def execute_tool(self, args: argparse.Namespace, result: ToolResult) -> None:
-        """Execute DNS server discovery and testing"""
-        try:
-            # Update metadata
-            result.metadata.update({
-                "domain": args.domain,
-                "timeout": args.timeout,
-                "use_tcp": args.tcp
-            })
-            
-            # Find authoritative nameservers
-            try:
-                ns_records = dns.resolver.resolve(args.domain, 'NS')
-                nameservers = [str(ns.target).rstrip('.') for ns in ns_records]
-                result.metadata["nameservers"] = nameservers
-                
-                for ns in nameservers:
-                    self._test_nameserver(ns, args, result)
-            except Exception as e:
-                result.add_error(f"Error finding nameservers: {str(e)}")
-            
-            # Test specified server if provided
-            if args.server:
-                self._test_nameserver(args.server, args, result)
-            
-            # Test predefined server lists based on flags
-            if args.top:
-                self._test_server_list(self.TOP_SERVERS, "Top Public DNS Servers", args, result)
-            if args.nl:
-                self._test_server_list(self.NL_SERVERS, "Netherlands DNS Servers", args, result)
-            if args.eg:
-                self._test_server_list(self.EG_SERVERS, "Egypt DNS Servers", args, result)
-            if args.vodafone:
-                self._test_server_list(self.VODAFONE_SERVERS, "Vodafone DNS Servers", args, result)
-            if args.aws:
-                self._test_server_list(self.AWS_SERVERS, "AWS DNS Servers", args, result)
-            if args.root:
-                self._test_server_list(self.ROOT_SERVERS, "Root DNS Servers", args, result)
-            
-            # Test servers from file if specified
-            if args.list:
-                try:
-                    with open(args.list) as f:
-                        servers = [line.strip() for line in f if line.strip()]
-                        self._test_server_list(servers, f"Servers from {args.list}", args, result)
-                except Exception as e:
-                    result.add_error(f"Error reading server list file: {str(e)}")
-            
-        except Exception as e:
-            result.add_error(f"Error during execution: {str(e)}")
-    
-    def _test_nameserver(self, server: str, args: argparse.Namespace, result: ToolResult) -> None:
-        """Test a single nameserver"""
-        try:
-            # Basic connectivity test
-            resolver = dns.resolver.Resolver()
-            resolver.nameservers = [server]
-            resolver.timeout = args.timeout
-            resolver.lifetime = args.timeout
-            
-            start_time = datetime.now()
-            try:
-                answers = resolver.resolve(args.domain, 'A')
-                response_time = (datetime.now() - start_time).total_seconds()
-                
-                result.add_finding(
-                    title=f"Nameserver Responding: {server}",
-                    description=f"Successfully queried {args.domain}",
-                    risk_level="Info",
-                    evidence=f"Response time: {response_time:.3f}s, Records: {[str(r) for r in answers]}"
-                )
-            except Exception as e:
-                result.add_finding(
-                    title=f"Nameserver Error: {server}",
-                    description=f"Failed to query {args.domain}",
-                    risk_level="High",
-                    evidence=str(e)
-                )
-            
-            # Check for recursive queries
-            try:
-                test_domain = "example.com."
-                resolver.resolve(test_domain, 'A')
-                result.add_finding(
-                    title=f"Open Recursive Resolver: {server}",
-                    description="Server allows recursive queries",
-                    risk_level="Medium",
-                    evidence=f"Successfully resolved {test_domain}"
-                )
-            except:
-                pass
-            
-        except Exception as e:
-            result.add_finding(
-                title=f"Nameserver Test Failed: {server}",
-                description="Could not complete nameserver tests",
-                risk_level="High",
-                evidence=str(e)
-            )
-    
-    def _test_server_list(self, servers: List[str], list_name: str, args: argparse.Namespace, result: ToolResult) -> None:
-        """Test a list of DNS servers"""
-        result.add_finding(
-            title=f"Testing {list_name}",
-            description=f"Starting tests for {len(servers)} servers",
-            risk_level="Info"
-        )
+    def _run_tool(self, args: Any, result: ToolResult) -> None:
+        """Run DNS server discovery with provided arguments"""
+        domain = self.get_param('domain')
+        server_types = self.get_param('server_types', 'all').split(',')
+        timeout = self.get_param('timeout', 5)
         
-        for server in servers:
-            self._test_nameserver(server, args, result)
+        # Configure resolver
+        self.resolver.timeout = timeout
+        self.resolver.lifetime = timeout
+        
+        if self.get_param('nameserver'):
+            self.resolver.nameservers = [self.get_param('nameserver')]
+            
+        try:
+            # Find nameservers
+            try:
+                ns_records = self.resolver.resolve(domain, 'NS')
+                for ns in ns_records:
+                    result.add_finding({
+                        'title': 'Found Nameserver',
+                        'description': f'Discovered nameserver for {domain}',
+                        'risk_level': 'Info',
+                        'details': {
+                            'nameserver': str(ns.target).rstrip('.'),
+                            'type': 'Authoritative'
+                        }
+                    })
+                    
+                    # Get IP addresses for nameservers
+                    try:
+                        ns_hostname = str(ns.target).rstrip('.')
+                        answers = self.resolver.resolve(ns_hostname, 'A')
+                        for answer in answers:
+                            result.add_finding({
+                                'title': 'Nameserver IP',
+                                'description': f'Resolved IP address for nameserver {ns_hostname}',
+                                'risk_level': 'Info',
+                                'details': {
+                                    'nameserver': ns_hostname,
+                                    'ip_address': str(answer),
+                                    'type': 'Authoritative'
+                                }
+                            })
+                    except Exception as e:
+                        result.add_warning(f"Could not resolve IP for nameserver {ns_hostname}: {str(e)}")
+                        
+            except dns.resolver.NXDOMAIN:
+                result.add_error(f"Domain {domain} does not exist")
+            except dns.resolver.NoAnswer:
+                result.add_warning(f"No NS records found for {domain}")
+            except Exception as e:
+                result.add_error(f"Error querying NS records: {str(e)}")
+                
+            # Check for recursive resolvers if requested
+            if 'recursive' in server_types or 'all' in server_types:
+                self._check_recursive_resolvers(result)
+                
+        except Exception as e:
+            result.add_error(f"Error during server discovery: {str(e)}")
+            if self.get_param('verbose', False):
+                import traceback
+                result.add_error(traceback.format_exc())
     
-    # Predefined server lists
-    TOP_SERVERS = [
-        "8.8.8.8",  # Google
-        "1.1.1.1",  # Cloudflare
-        "9.9.9.9",  # Quad9
-        "208.67.222.222"  # OpenDNS
-    ]
-    
-    NL_SERVERS = [
-        "194.109.6.66",  # xs4all
-        "194.109.9.99"
-    ]
-    
-    EG_SERVERS = [
-        "163.121.128.134",
-        "163.121.128.135"
-    ]
-    
-    VODAFONE_SERVERS = [
-        "194.224.0.2",
-        "194.224.0.1"
-    ]
-    
-    AWS_SERVERS = [
-        "205.251.192.0",
-        "205.251.193.0",
-        "205.251.194.0",
-        "205.251.195.0"
-    ]
-    
-    ROOT_SERVERS = [
-        "198.41.0.4",    # a.root-servers.net
-        "199.9.14.201",  # b.root-servers.net
-        "192.33.4.12",   # c.root-servers.net
-        "199.7.91.13",   # d.root-servers.net
-        "192.203.230.10" # e.root-servers.net
-    ]
+    def _check_recursive_resolvers(self, result: ToolResult) -> None:
+        """Check for recursive DNS resolvers"""
+        common_resolvers = [
+            '8.8.8.8',  # Google
+            '1.1.1.1',  # Cloudflare
+            '9.9.9.9',  # Quad9
+            '208.67.222.222'  # OpenDNS
+        ]
+        
+        for resolver_ip in common_resolvers:
+            try:
+                test_resolver = dns.resolver.Resolver()
+                test_resolver.nameservers = [resolver_ip]
+                test_resolver.timeout = 2
+                
+                # Try to resolve a known domain
+                try:
+                    answers = test_resolver.resolve('www.google.com', 'A')
+                    result.add_finding({
+                        'title': 'Working Recursive Resolver',
+                        'description': f'Found working recursive DNS resolver',
+                        'risk_level': 'Info',
+                        'details': {
+                            'ip_address': resolver_ip,
+                            'type': 'Recursive',
+                            'provider': self._get_resolver_provider(resolver_ip)
+                        }
+                    })
+                except:
+                    continue
+                    
+            except Exception as e:
+                result.add_warning(f"Error checking resolver {resolver_ip}: {str(e)}")
+                
+    def _get_resolver_provider(self, ip: str) -> str:
+        """Get the provider name for a known resolver IP"""
+        providers = {
+            '8.8.8.8': 'Google DNS',
+            '8.8.4.4': 'Google DNS',
+            '1.1.1.1': 'Cloudflare DNS',
+            '1.0.0.1': 'Cloudflare DNS',
+            '9.9.9.9': 'Quad9',
+            '149.112.112.112': 'Quad9',
+            '208.67.222.222': 'OpenDNS',
+            '208.67.220.220': 'OpenDNS'
+        }
+        return providers.get(ip, 'Unknown')
 
 def main():
+    """Entry point for DNS server finder tool"""
     tool = DNSServerFinder()
     return tool.main()
 
 if __name__ == "__main__":
-    sys.exit(0 if main()['status'] == 'success' else 1)
+    main()

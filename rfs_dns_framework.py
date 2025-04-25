@@ -60,6 +60,314 @@ logging.getLogger('scapy.runtime').setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+# Centralized Tool Parameters
+TOOL_PARAMETERS = {
+    "common": {
+        "--domain": {
+            "help": "Target domain for analysis",
+            "required": False  # Required only for tools, not framework
+        },
+        "--output": {
+            "help": "Output file path for results",
+            "required": False
+        },
+        "--html-report": {
+            "help": "Path for HTML report output",
+            "required": False
+        },
+        "--quiet": {
+            "help": "Suppress non-essential output",
+            "action": "store_true",
+            "required": False
+        },
+        "--verbose": {
+            "help": "Enable detailed output",
+            "action": "store_true",
+            "required": False
+        },
+        "--timeout": {
+            "help": "Operation timeout in seconds",
+            "type": int,
+            "default": 30,
+            "required": False
+        },
+        "--nameserver": {
+            "help": "Custom DNS nameserver to use",
+            "required": False
+        }
+    },
+    
+    # DNS Enumeration parameters
+    "dns_enum": {
+        "--record-types": {
+            "help": "Comma-separated list of DNS record types to query",
+            "default": "A,AAAA,CNAME,MX,NS,TXT,SOA"
+        },
+        "--check-dnssec": {
+            "help": "Enable DNSSEC validation checks",
+            "action": "store_true"
+        },
+        "--check-wildcards": {
+            "help": "Check for wildcard DNS records",
+            "action": "store_true"
+        },
+        "--threads": {
+            "help": "Number of concurrent threads for queries",
+            "type": int,
+            "default": 10
+        },
+        "--wordlist": {
+            "help": "Path to subdomain wordlist file"
+        }
+    },
+    
+    # DNS Zone Walker parameters
+    "zone_walker": {
+        "--nsec-mode": {
+            "help": "NSEC record walking mode",
+            "choices": ["nsec", "nsec3", "both"],
+            "default": "both"
+        },
+        "--aggressive": {
+            "help": "Enable aggressive zone walking",
+            "action": "store_true"
+        },
+        "--max-iterations": {
+            "help": "Maximum number of zone walking iterations",
+            "type": int,
+            "default": 1000
+        }
+    },
+    
+    # DNS Protocol Fuzzer parameters
+    "dns_protocol_fuzzer": {
+        "--mutation-rate": {
+            "help": "Rate of packet mutation (0.0-1.0)",
+            "type": float,
+            "default": 0.1
+        },
+        "--packet-count": {
+            "help": "Number of packets to send",
+            "type": int,
+            "default": 1000
+        },
+        "--target-port": {
+            "help": "Target DNS server port",
+            "type": int,
+            "default": 53
+        }
+    },
+    
+    # DNS Record Validator parameters
+    "dns_record_validator": {
+        "--check-all": {
+            "help": "Run all validation checks",
+            "action": "store_true"
+        },
+        "--validate-dnssec": {
+            "help": "Validate DNSSEC records",
+            "action": "store_true"
+        },
+        "--validate-spf": {
+            "help": "Validate SPF records",
+            "action": "store_true"
+        },
+        "--validate-dmarc": {
+            "help": "Validate DMARC records",
+            "action": "store_true"
+        }
+    },
+    
+    # DNS Security Scanner parameters
+    "dns_security_scanner": {
+        "--scan-type": {
+            "help": "Type of security scan to perform",
+            "choices": ["full", "quick", "custom"],
+            "default": "full"
+        },
+        "--custom-checks": {
+            "help": "Comma-separated list of custom security checks"
+        },
+        "--risk-level": {
+            "help": "Minimum risk level to report",
+            "choices": ["Low", "Medium", "High", "Critical"],
+            "default": "Low"
+        }
+    },
+    
+    # DNS Takeover Scanner parameters
+    "dns_takeover_scanner": {
+        "--providers": {
+            "help": "Comma-separated list of providers to check",
+            "default": "all"
+        },
+        "--verify-takeover": {
+            "help": "Attempt to verify potential takeovers",
+            "action": "store_true"
+        },
+        "--include-inactive": {
+            "help": "Include inactive/parked domains",
+            "action": "store_true"
+        }
+    },
+    
+    # DNS TLD Bruteforce parameters
+    "dns_tld_bruteforce": {
+        "--tld-list": {
+            "help": "Path to TLD wordlist file"
+        },
+        "--concurrent": {
+            "help": "Number of concurrent TLD checks",
+            "type": int,
+            "default": 50
+        },
+        "--check-whois": {
+            "help": "Perform WHOIS lookup for discovered TLDs",
+            "action": "store_true"
+        }
+    },
+    
+    # DNS Tunnel Detector parameters
+    "dns_tunnel_detector": {
+        "--detection-mode": {
+            "help": "Tunnel detection mode",
+            "choices": ["passive", "active", "hybrid"],
+            "default": "passive"
+        },
+        "--pcap-file": {
+            "help": "PCAP file to analyze"
+        },
+        "--interface": {
+            "help": "Network interface for live capture",
+            "default": "eth0"
+        },
+        "--threshold": {
+            "help": "Detection threshold score",
+            "type": float,
+            "default": 0.7
+        }
+    },
+    
+    # Cloud Provider Enumeration parameters
+    "cloud_enum": {
+        "--providers": {
+            "help": "Cloud providers to enumerate",
+            "choices": ["aws", "azure", "gcp", "all"],
+            "default": "all"
+        },
+        "--services": {
+            "help": "Specific services to enumerate",
+            "default": "all"
+        },
+        "--region": {
+            "help": "Specific region to focus on"
+        }
+    },
+    
+    # DNS Server Finder parameters
+    "find_server": {
+        "--server-types": {
+            "help": "Types of DNS servers to find",
+            "choices": ["authoritative", "recursive", "all"],
+            "default": "all"
+        },
+        "--check-version": {
+            "help": "Attempt to determine server versions",
+            "action": "store_true"
+        },
+        "--port-scan": {
+            "help": "Perform port scan on discovered servers",
+            "action": "store_true"
+        }
+    },
+    
+    # Mobile Gateway Enumeration parameters
+    "mobile_gw": {
+        "--gateway-types": {
+            "help": "Types of mobile gateways to enumerate",
+            "choices": ["sgw", "pgw", "mme", "all"],
+            "default": "all"
+        },
+        "--operator": {
+            "help": "Target mobile operator"
+        },
+        "--mcc": {
+            "help": "Mobile Country Code"
+        },
+        "--mnc": {
+            "help": "Mobile Network Code"
+        }
+    },
+    
+    # SSL Scanner parameters
+    "ssl_scanner": {
+        "--ports": {
+            "help": "Ports to scan for SSL/TLS",
+            "default": "443,8443"
+        },
+        "--min-tls-version": {
+            "help": "Minimum acceptable TLS version",
+            "choices": ["1.0", "1.1", "1.2", "1.3"],
+            "default": "1.2"
+        },
+        "--check-ciphers": {
+            "help": "Check supported cipher suites",
+            "action": "store_true"
+        },
+        "--check-cert": {
+            "help": "Perform certificate validation",
+            "action": "store_true"
+        }
+    },
+    
+    # Cache Poisoning Detector parameters
+    "cache_poison": {
+        "--test-mode": {
+            "help": "Cache poisoning test mode",
+            "choices": ["passive", "active", "both"],
+            "default": "passive"
+        },
+        "--query-rate": {
+            "help": "Query rate for testing",
+            "type": int,
+            "default": 100
+        },
+        "--randomize-qnames": {
+            "help": "Use random query names",
+            "action": "store_true"
+        }
+    }
+}
+
+# Framework-specific parameters
+FRAMEWORK_PARAMETERS = {
+    "--list-tools": {
+        "help": "List available tools",
+        "action": "store_true"
+    },
+    "--workflow": {
+        "help": "Run complete DNS analysis workflow",
+        "action": "store_true"
+    },
+    "--report-format": {
+        "help": "Report format (default: both)",
+        "choices": ["json", "html", "both"],
+        "default": "both"
+    },
+    "--check-deps": {
+        "help": "Check tool dependencies",
+        "action": "store_true"
+    },
+    "--force": {
+        "help": "Try to run operations even without required privileges",
+        "action": "store_true"
+    },
+    "--no-html": {
+        "help": "Disable HTML report generation",
+        "action": "store_true"
+    }
+}
+
 class RFSDNSFramework:
     def __init__(self, config_file: Optional[str] = None):
         self.console = Console()
@@ -129,43 +437,76 @@ class RFSDNSFramework:
                 if module and config:
                     # Define tool-specific argument handling
                     def get_workflow_args(tool_name):
+                        """Get the appropriate arguments for a tool in workflow mode"""
                         def workflow_args(domain, output, **kwargs):
-                            base_args = [domain]
-                            
-                            # Add output argument
-                            if '--output' not in base_args:
-                                base_args.extend(['--output', output])
-                            
-                            # Add framework mode flag
-                            if '--framework-mode' not in base_args:
-                                base_args.append('--framework-mode')
+                            # Base arguments that all tools should receive
+                            base_args = [
+                                '--domain', domain,
+                                '--output', output,
+                                '--framework-mode'
+                            ]
                             
                             # Add tool-specific arguments based on tool name
                             if tool_name == 'dns_enum':
-                                base_args.extend(['--all'])
+                                base_args.extend([
+                                    '--record-types', 'A,AAAA,CNAME,MX,NS,TXT,SOA',
+                                    '--check-dnssec',
+                                    '--check-wildcards'
+                                ])
                             elif tool_name == 'find_server':
-                                base_args.extend(['--check-all'])
+                                base_args.extend([
+                                    '--server-types', 'all',
+                                    '--check-version'
+                                ])
                             elif tool_name == 'cloud_enum':
-                                base_args.extend(['--provider', 'all'])
+                                base_args.extend([
+                                    '--provider', 'all',
+                                    '--check-dns',
+                                    '--check-http'
+                                ])
                             elif tool_name == 'tld_brute':
-                                base_args.extend(['--type', 'all'])
+                                base_args.extend([
+                                    '--concurrent', '50',
+                                    '--check-whois'
+                                ])
                             elif tool_name == 'takeover':
-                                base_args.extend(['--check-all'])
+                                base_args.extend([
+                                    '--providers', 'all',
+                                    '--verify-takeover'
+                                ])
                             elif tool_name == 'seizure':
-                                base_args.extend(['--check-all'])
+                                base_args.extend([
+                                    '--check-whois',
+                                    '--check-dns',
+                                    '--check-http'
+                                ])
                             elif tool_name == 'mobile_gw':
-                                base_args.extend(['--gateway-type', 'all'])
+                                base_args.extend([
+                                    '--gateway-type', 'all',
+                                    '--no-protocol-tests'
+                                ])
                             elif tool_name == 'cache_poison':
-                                base_args.extend(['--comprehensive'])
+                                base_args.extend([
+                                    '--test-mode', 'passive',
+                                    '--randomize-qnames'
+                                ])
                             elif tool_name == 'ssl_scanner':
-                                base_args.extend(['--check-subdomains'])
+                                base_args.extend([
+                                    '--ports', '443,8443',
+                                    '--check-cert',
+                                    '--check-ciphers'
+                                ])
                             elif tool_name == 'dns_takeover':
-                                base_args.extend(['--analyze'])
-                            
-                            # Add any extra arguments
+                                base_args.extend([
+                                    '--providers', 'all',
+                                    '--verify-takeover',
+                                    '--include-inactive'
+                                ])
+                                
+                            # Add any extra arguments from kwargs
                             if kwargs.get('extra_args'):
                                 base_args.extend(kwargs['extra_args'])
-                            
+                                    
                             return base_args
                         return workflow_args
 
@@ -268,7 +609,7 @@ class RFSDNSFramework:
                 
         return True, None
 
-    def run_tool(self, tool_name: str, tool_args: List[str], force: bool = False) -> bool:
+    def run_tool(self, tool_name: str, tool_args: Dict[str, Any], force: bool = False) -> bool:
         """Run a specific tool with arguments"""
         try:
             # Check tool requirements
@@ -292,40 +633,22 @@ class RFSDNSFramework:
             
             # Create tool instance
             if hasattr(module, 'main'):
-                # Set up arguments
-                args = [tool_info['script']]
+                # Start with the script name
+                cmd_args = [tool_info['script']]
                 
-                # Add domain argument if provided
-                if '--domain' in sys.argv:
-                    domain_index = sys.argv.index('--domain')
-                    if domain_index + 1 < len(sys.argv):
-                        args.append(sys.argv[domain_index + 1])
-                
-                # Add any additional tool arguments
-                args.extend(tool_args)
-                
-                # Check if tool supports HTML reports before adding the argument
-                supports_html = False
-                if hasattr(module, 'supports_html_report'):
-                    supports_html = module.supports_html_report
-                elif hasattr(module, 'main') and '--html-report' in str(module.main.__doc__ or ''):
-                    supports_html = True
-                
-                # Only add HTML report argument if tool supports it
-                if supports_html:
-                    output_dir = None
-                    for i, arg in enumerate(args):
-                        if arg == '--output':
-                            output_dir = os.path.dirname(args[i + 1])
-                            break
+                # Get workflow arguments for the tool
+                workflow_args_func = tool_info['workflow_args']
+                if workflow_args_func:
+                    # Get the domain and output from tool_args
+                    domain = tool_args.get('domain')
+                    output = tool_args.get('output', os.path.join('results', domain if domain else '', f"{tool_name}_results.json"))
                     
-                    if output_dir:
-                        html_report = os.path.join(output_dir, f"{tool_name}_report.html")
-                        if '--html-report' not in args:
-                            args.extend(['--html-report', html_report])
+                    # Get the workflow-specific arguments
+                    args_list = workflow_args_func(domain=domain, output=output)
+                    cmd_args.extend(args_list)
                 
                 # Set up sys.argv for the tool
-                sys.argv = args
+                sys.argv = cmd_args
                 
                 # Run the tool
                 result = module.main()
@@ -1005,93 +1328,95 @@ class RFSDNSFramework:
         return f"[{color}]{risk_level}[/{color}]"
 
 def main():
+    """Main entry point for the RFS DNS Framework"""
     parser = argparse.ArgumentParser(
-        description=f"RFS DNS Framework v{RFSDNSFramework().version} - Comprehensive DNS Security Testing"
+        description="RFS DNS Framework - A comprehensive DNS reconnaissance and security assessment framework",
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument('--list-tools', action='store_true',
-                      help='List available tools')
-    parser.add_argument('--tool', choices=[t['name'] for t in registry.list_tools()],
-                      help='Run a specific tool')
-    parser.add_argument('--workflow', action='store_true',
-                      help='Run complete DNS analysis workflow')
-    parser.add_argument('--domain',
-                      help='Target domain for analysis')
-    parser.add_argument('--output-dir', default='results',
-                      help='Output directory for results')
-    parser.add_argument('--report-format', choices=['json', 'html', 'both'],
-                      default='both', help='Report format (default: both)')
-    parser.add_argument('--check-deps', action='store_true',
-                      help='Check tool dependencies')
-    parser.add_argument('--force', action='store_true',
-                      help='Try to run operations even without required privileges')
-    parser.add_argument('--quiet', action='store_true',
-                      help='Suppress non-essential output')
-    parser.add_argument('--no-html', action='store_true',
-                      help='Disable HTML report generation')
-    parser.add_argument('tool_args', nargs=argparse.REMAINDER,
-                      help='Arguments to pass to the tool')
+
+    # Framework-level arguments
+    parser.add_argument('--config', help='Path to configuration file')
+    parser.add_argument('--list-tools', action='store_true', help='List available tools')
+    parser.add_argument('--workflow', action='store_true', help='Run the full workflow')
+    parser.add_argument('--force', action='store_true', help='Force run even if requirements not met')
     
+    # Add common parameters
+    for param, config in TOOL_PARAMETERS['common'].items():
+        param_name = param.lstrip('-')
+        if 'action' in config:
+            parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
+        else:
+            parser.add_argument(param, **config)
+
+    # Create subparsers for tools
+    subparsers = parser.add_subparsers(dest='tool', help='Tool to run')
+    
+    # Add tool-specific subparsers
+    for tool_name, tool_params in TOOL_PARAMETERS.items():
+        if tool_name != 'common':  # Skip common parameters
+            tool_parser = subparsers.add_parser(tool_name, help=f'Run the {tool_name} tool')
+            
+            # Add common parameters to tool parser
+            for param, config in TOOL_PARAMETERS['common'].items():
+                param_name = param.lstrip('-')
+                if 'action' in config:
+                    tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
+                else:
+                    tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
+            
+            # Add tool-specific parameters
+            for param, config in tool_params.items():
+                param_name = param.lstrip('-')
+                if 'action' in config:
+                    tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
+                else:
+                    tool_parser.add_argument(param, **config)
+
     args = parser.parse_args()
-    
+
     try:
         # Initialize framework
-        framework = RFSDNSFramework()
-        
-        # Only show banner if not in quiet mode
-        if not args.quiet:
-            framework.display_banner()
-        
-        if args.check_deps:
-            framework._load_tools()  # This will check dependencies
-        elif args.list_tools:
+        framework = RFSDNSFramework(config_file=args.config)
+        framework.display_banner()
+
+        # Handle --list-tools
+        if args.list_tools:
             framework.list_tools()
-        elif args.workflow:
+            return 0
+
+        # Validate domain for workflow or tool execution
+        if args.workflow or args.tool:
             if not args.domain:
-                framework.console.print("[red]Error: --domain is required for workflow")
-                sys.exit(1)
-            # Always generate HTML report unless explicitly disabled
-            report_format = 'json' if args.no_html else 'both'
-            framework.run_workflow(args.domain, args.output_dir, report_format, args.force)
-        elif args.tool:
-            # Prepare tool arguments
-            tool_args = []
+                parser.error("--domain is required for workflow or tool execution")
+
+        # Handle workflow execution
+        if args.workflow:
+            output_dir = args.output if args.output else os.path.join('results', args.domain)
+            report_format = 'html' if args.html_report else 'json'
+            framework.run_workflow(args.domain, output_dir, report_format, args.force)
+            return 0
+
+        # Handle individual tool execution
+        if args.tool:
+            # Convert args to dict for tool execution
+            tool_args = vars(args)
             
-            # Add domain if provided
-            if args.domain:
-                tool_args.append(args.domain)
-            
-            # Add output file if output directory is specified
-            if args.output_dir:
-                output_file = os.path.join(args.output_dir, f"{args.tool}_results.json")
-                tool_args.extend(['--output', output_file])
-                
-                # Always generate HTML report unless explicitly disabled
-                if not args.no_html:
-                    html_file = os.path.join(args.output_dir, f"{args.tool}_report.html")
-                    tool_args.extend(['--html-report', html_file])
-            
-            # Add framework mode flag
-            tool_args.append('--framework-mode')
-            
-            # Add any additional tool arguments
-            if args.tool_args:
-                tool_args.extend(args.tool_args)
-            
-            # Run the tool
+            # Run the selected tool
             success = framework.run_tool(args.tool, tool_args, args.force)
-            if not success:
-                sys.exit(1)
-        else:
-            parser.print_help()
-    
+            return 0 if success else 1
+
+        # If no action specified, show help
+        parser.print_help()
+        return 0
+
     except KeyboardInterrupt:
-        if not args.quiet:
-            print("\n[!] Operation interrupted by user")
-        sys.exit(1)
+        logger.warning("\nOperation interrupted by user")
+        return 130
     except Exception as e:
-        if not args.quiet:
-            print(f"\n[!] Error: {str(e)}")
-        sys.exit(1)
+        logger.error(f"An error occurred: {str(e)}")
+        if args.verbose:
+            logger.exception("Detailed error information:")
+        return 1
 
 if __name__ == "__main__":
-    main() 
+    sys.exit(main()) 
