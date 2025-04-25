@@ -80,19 +80,48 @@ class BaseTool:
         
     def get_param(self, name: str, default: Any = None) -> Any:
         """Get a parameter value by name"""
-        return self._params.get(name, default)
+        # Convert parameter name to argument format if needed
+        param_name = name.replace('-', '_')  # Convert dashes to underscores
+        
+        # Try getting from _params dict first
+        if isinstance(self._params, dict):
+            value = self._params.get(param_name, None)
+            if value is not None:
+                return value
+                
+        # If _params is a Namespace, try getting attribute
+        if hasattr(self._params, param_name):
+            return getattr(self._params, param_name)
+            
+        return default
         
     def get_params(self) -> Dict[str, Any]:
         """Get all parameters"""
-        return self._params
+        if isinstance(self._params, dict):
+            return self._params
+        elif hasattr(self._params, '__dict__'):
+            return vars(self._params)
+        return {}
         
     def set_param(self, name: str, value: Any) -> None:
         """Set a parameter value"""
-        self._params[name] = value
+        if isinstance(self._params, dict):
+            self._params[name] = value
+        else:
+            # Convert to dict if not already
+            self._params = {name: value}
         
-    def set_params(self, params: Dict[str, Any]) -> None:
+    def set_params(self, params: Any) -> None:
         """Set multiple parameters"""
-        self._params.update(params)
+        if isinstance(params, dict):
+            self._params = params.copy()  # Make a copy to avoid modifying original
+        elif hasattr(params, '__dict__'):
+            self._params = vars(params).copy()
+        else:
+            self._params = params
+        
+        # Set framework mode if specified
+        self.framework_mode = self._params.get('framework_mode', False)
         
     def get_result(self) -> ToolResult:
         """Get the tool result object"""
@@ -116,13 +145,8 @@ class BaseTool:
             # Create result object
             result = self.get_result()
             
-            # Get args from framework parameters
-            args = argparse.Namespace()
-            for key, value in self._params.items():
-                setattr(args, key, value)
-            
-            # Run the tool
-            self._run_tool(args, result)
+            # Run the tool with current parameters
+            self._run_tool(self._params, result)
             
             return result.to_dict()
             

@@ -23,15 +23,25 @@ from typing import Dict, List, Optional, Set, Any
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import argparse
 
 # Import base tool directly
-from base_tool import BaseTool, ToolResult
+try:
+    from .base_tool import BaseTool, ToolResult
+except ImportError:
+    # Fallback for direct script execution
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from tools.base_tool import BaseTool, ToolResult
 
 class ServerFinder(BaseTool):
     """Tool for discovering and analyzing server infrastructure"""
     
     def __init__(self):
-        super().__init__("find_server", "2.1.0")
+        super().__init__(
+            name="find_server",
+            description="Server Discovery Tool"
+        )
+        self.version = "2.1.0"
         self.resolver = dns.resolver.Resolver()
         self.resolver.timeout = 2.0
         self.resolver.lifetime = 2.0
@@ -100,56 +110,64 @@ class ServerFinder(BaseTool):
             }
         }
         
-    def _run_tool(self, args: Dict[str, Any]) -> ToolResult:
+    def _run_tool(self, args: Any, result: ToolResult) -> None:
         """Run the server finder tool with the given arguments"""
-        domain = args.get("domain")
+        # Initialize result if not provided
+        if result is None:
+            result = self.get_result()
+        
+        # Get domain parameter
+        domain = self.get_param("domain")
         if not domain:
-            return ToolResult(success=False, findings=[], errors=["Domain not specified"])
+            result.success = False
+            result.add_error("Domain not specified")
+            return
 
         # Update resolver settings
-        if args.get("timeout"):
-            self.resolver.timeout = float(args.get("timeout"))
-            self.resolver.lifetime = float(args.get("timeout"))
+        timeout = self.get_param("timeout", 2.0)
+        self.resolver.timeout = float(timeout)
+        self.resolver.lifetime = float(timeout)
         
-        if args.get("nameserver"):
-            self.resolver.nameservers = [args.get("nameserver")]
-
-        findings = []
-        errors = []
+        nameserver = self.get_param("nameserver")
+        if nameserver:
+            self.resolver.nameservers = [nameserver]
 
         try:
             # DNS Server Discovery
             dns_servers = self._find_dns_servers(domain)
-            findings.extend(dns_servers)
+            for finding in dns_servers:
+                result.add_finding(finding)
 
             # Web Server Detection if enabled
-            if args.get("check_web", True):
+            if self.get_param("check_web", True):
                 web_servers = self._find_web_servers(domain)
-                findings.extend(web_servers)
+                for finding in web_servers:
+                    result.add_finding(finding)
 
             # Mail Server Detection if enabled
-            if args.get("check_mail", True):
+            if self.get_param("check_mail", True):
                 mail_servers = self._find_mail_servers(domain)
-                findings.extend(mail_servers)
+                for finding in mail_servers:
+                    result.add_finding(finding)
 
             # Load Balancer Detection if enabled
-            if args.get("check_lb", True):
+            if self.get_param("check_lb", True):
                 lb_findings = self._detect_load_balancers(domain)
-                findings.extend(lb_findings)
+                for finding in lb_findings:
+                    result.add_finding(finding)
 
             # CDN Detection if enabled
-            if args.get("check_cdn", True):
+            if self.get_param("check_cdn", True):
                 cdn_findings = self._detect_cdn(domain)
-                findings.extend(cdn_findings)
+                for finding in cdn_findings:
+                    result.add_finding(finding)
+
+            # Set success if we got this far
+            result.success = True
 
         except Exception as e:
-            errors.append(f"Error during server discovery: {str(e)}")
-
-        return ToolResult(
-            success=len(errors) == 0,
-            findings=findings,
-            errors=errors
-        )
+            result.success = False
+            result.add_error(f"Error during server discovery: {str(e)}")
 
     def _find_dns_servers(self, domain: str) -> List[Dict[str, Any]]:
         """Find DNS servers for the domain"""
@@ -405,9 +423,41 @@ class ServerFinder(BaseTool):
         return findings
 
 def main():
-    """Entry point for server finder"""
+    """Main entry point for the tool"""
     tool = ServerFinder()
-    tool.run()
+    
+    if len(sys.argv) > 1:
+        # Running as standalone script
+        parser = argparse.ArgumentParser(description=tool.description)
+        parser.add_argument('--domain', required=True, help='Target domain')
+        parser.add_argument('--output', help='Output file path')
+        parser.add_argument('--timeout', type=float, default=2.0, help='Query timeout')
+        parser.add_argument('--nameserver', help='Custom nameserver to use')
+        parser.add_argument('--check-web', action='store_true', help='Check web servers')
+        parser.add_argument('--check-mail', action='store_true', help='Check mail servers')
+        parser.add_argument('--check-lb', action='store_true', help='Check load balancers')
+        parser.add_argument('--check-cdn', action='store_true', help='Check CDN usage')
+        args = parser.parse_args()
+        
+        # Convert args to dict
+        params = vars(args)
+    else:
+        # Running as module
+        params = {}
+    
+    # Run the tool
+    result = tool.run(params)
+    
+    # Handle output
+    if params.get('output'):
+        output_file = params['output']
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        with open(output_file, 'w') as f:
+            json.dump(result, f, indent=4)
+    else:
+        print(json.dumps(result, indent=4))
+    
+    return result
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main() 

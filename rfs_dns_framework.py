@@ -26,7 +26,7 @@ import rich.traceback
 
 from config_manager import ConfigManager
 from tools.base_tool import BaseTool, ToolResult
-from tools import registry
+from tools.registry import registry, list_tools, get_tool, get_tool_config, get_ordered_tools
 
 # Configure rich error handling
 rich.traceback.install(show_locals=False)
@@ -100,181 +100,125 @@ TOOL_PARAMETERS = {
             "choices": ["json", "csv", "text"],
             "default": "json",
             "required": False
+        },
+        "--framework-mode": {
+            "help": "Run in framework integration mode",
+            "action": "store_true",
+            "required": False
         }
     },
     
-    "dns_enum": {
-        "description": "DNS Enumeration Tool",
-        "requires_root": False,
-        "critical": True,
-        "order": 1,
-        "parameters": {
-            "--record-types": {
-                "help": "DNS record types to query (comma-separated)",
-                "default": "A,AAAA,CNAME,MX,NS,TXT,SOA",
-                "required": False
-            },
-            "--check-dnssec": {
-                "help": "Enable DNSSEC validation",
-                "action": "store_true",
-                "required": False
-            },
-            "--check-wildcards": {
-                "help": "Check for wildcard DNS records",
-                "action": "store_true",
-                "required": False
-            },
-            "--wordlist": {
-                "help": "Path to subdomain wordlist",
-                "required": False
-            }
+    # DNS tool parameters
+    "dns": {
+        "--record-types": {
+            "help": "DNS record types to query (comma-separated)",
+            "default": "A,AAAA,CNAME,MX,NS,TXT,SOA",
+            "required": False
+        },
+        "--check-dnssec": {
+            "help": "Enable DNSSEC validation",
+            "action": "store_true",
+            "required": False
+        },
+        "--check-wildcards": {
+            "help": "Check for wildcard DNS records",
+            "action": "store_true",
+            "required": False
+        },
+        "--wordlist": {
+            "help": "Path to wordlist file",
+            "required": False
+        },
+        "--concurrent": {
+            "help": "Number of concurrent operations",
+            "type": int,
+            "default": 10,
+            "required": False
         }
     },
     
-    "find_server": {
-        "description": "DNS Server Discovery Tool",
-        "requires_root": False,
-        "critical": True,
-        "order": 2,
-        "parameters": {
-            "--server-types": {
-                "help": "Types of servers to find",
-                "choices": ["authoritative", "recursive", "all"],
-                "default": "all",
-                "required": False
-            },
-            "--check-version": {
-                "help": "Attempt to determine server versions",
-                "action": "store_true",
-                "required": False
-            }
+    # Server parameters
+    "server": {
+        "--server-types": {
+            "help": "Types of servers to find",
+            "choices": ["authoritative", "recursive", "all"],
+            "default": "all",
+            "required": False
+        },
+        "--check-version": {
+            "help": "Attempt to determine server versions",
+            "action": "store_true",
+            "required": False
+        },
+        "--ports": {
+            "help": "Ports to scan (comma-separated)",
+            "default": "53,853,5353",
+            "required": False
         }
     },
     
-    "cloud_enum": {
-        "description": "Cloud Service Enumeration",
-        "requires_root": False,
-        "critical": True,
-        "order": 3,
-        "parameters": {
-            "--providers": {
-                "help": "Cloud providers to check",
-                "choices": ["aws", "azure", "gcp", "all"],
-                "default": "all",
-                "required": False
-            },
-            "--services": {
-                "help": "Services to enumerate (comma-separated)",
-                "default": "all",
-                "required": False
-            }
+    # Cloud parameters
+    "cloud": {
+        "--providers": {
+            "help": "Cloud providers to check",
+            "choices": ["aws", "azure", "gcp", "all"],
+            "default": "all",
+            "required": False
+        },
+        "--services": {
+            "help": "Services to enumerate (comma-separated)",
+            "default": "all",
+            "required": False
+        },
+        "--regions": {
+            "help": "Regions to check (comma-separated)",
+            "default": "all",
+            "required": False
         }
     },
     
-    "dns_takeover": {
-        "description": "DNS Takeover Scanner",
-        "requires_root": False,
-        "critical": True,
-        "order": 4,
-        "parameters": {
-            "--providers": {
-                "help": "Service providers to check",
-                "default": "all",
-                "required": False
-            },
-            "--verify-takeover": {
-                "help": "Verify potential takeover vulnerabilities",
-                "action": "store_true",
-                "required": False
-            },
-            "--include-inactive": {
-                "help": "Include inactive/parked domains",
-                "action": "store_true",
-                "required": False
-            }
+    # Security parameters
+    "security": {
+        "--risk-level": {
+            "help": "Minimum risk level to report",
+            "choices": ["low", "medium", "high", "critical"],
+            "default": "low",
+            "required": False
+        },
+        "--verify": {
+            "help": "Verify findings",
+            "action": "store_true",
+            "required": False
+        },
+        "--include-passive": {
+            "help": "Include passive checks",
+            "action": "store_true",
+            "required": False
         }
     },
     
-    "mobile_gw": {
-        "description": "Mobile Gateway Scanner",
-        "requires_root": True,
-        "critical": False,
-        "order": 5,
-        "parameters": {
-            "--gateway-type": {
-                "help": "Type of mobile gateways to scan",
-                "choices": ["sgw", "pgw", "mme", "all"],
-                "default": "all",
-                "required": False
-            },
-            "--operator": {
-                "help": "Target mobile operator",
-                "required": False
-            },
-            "--mcc": {
-                "help": "Mobile Country Code",
-                "required": False
-            },
-            "--mnc": {
-                "help": "Mobile Network Code",
-                "required": False
-            }
-        }
-    },
-    
-    "ssl_scanner": {
-        "description": "SSL/TLS Security Scanner",
-        "requires_root": False,
-        "critical": True,
-        "order": 6,
-        "parameters": {
-            "--ports": {
-                "help": "Ports to scan (comma-separated)",
-                "default": "443,8443",
-                "required": False
-            },
-            "--min-tls-version": {
-                "help": "Minimum acceptable TLS version",
-                "choices": ["1.0", "1.1", "1.2", "1.3"],
-                "default": "1.2",
-                "required": False
-            },
-            "--check-ciphers": {
-                "help": "Check supported cipher suites",
-                "action": "store_true",
-                "required": False
-            },
-            "--check-cert": {
-                "help": "Perform certificate validation",
-                "action": "store_true",
-                "required": False
-            }
-        }
-    },
-    
-    "cache_poison": {
-        "description": "DNS Cache Poisoning Detector",
-        "requires_root": True,
-        "critical": True,
-        "order": 7,
-        "parameters": {
-            "--test-mode": {
-                "help": "Cache poisoning test mode",
-                "choices": ["passive", "active", "both"],
-                "default": "passive",
-                "required": False
-            },
-            "--query-rate": {
-                "help": "Query rate for testing",
-                "type": int,
-                "default": 100,
-                "required": False
-            },
-            "--randomize-qnames": {
-                "help": "Use random query names",
-                "action": "store_true",
-                "required": False
-            }
+    # SSL/TLS parameters
+    "ssl": {
+        "--ssl-ports": {
+            "help": "Ports to scan for SSL/TLS",
+            "default": "443,8443",
+            "required": False
+        },
+        "--min-tls-version": {
+            "help": "Minimum acceptable TLS version",
+            "choices": ["1.0", "1.1", "1.2", "1.3"],
+            "default": "1.2",
+            "required": False
+        },
+        "--check-ciphers": {
+            "help": "Check supported cipher suites",
+            "action": "store_true",
+            "required": False
+        },
+        "--check-cert": {
+            "help": "Perform certificate validation",
+            "action": "store_true",
+            "required": False
         }
     }
 }
@@ -309,6 +253,8 @@ FRAMEWORK_PARAMETERS = {
 }
 
 class RFSDNSFramework:
+    """Main framework class for RFS DNS Framework"""
+    
     def __init__(self, config_file: Optional[str] = None):
         self.console = Console()
         self.config = ConfigManager(config_file if config_file else "config.yaml")
@@ -317,6 +263,7 @@ class RFSDNSFramework:
         self.tools_dir = Path('tools')
         self.results_dir = Path('results')
         self.version = "2.1.0"
+        self.tools = {}
         self.tools_loaded = False
         
         # Initialize workflow results
@@ -367,12 +314,12 @@ class RFSDNSFramework:
             return
 
         try:
-            # Get tool information from registry
+            # Get all available tools from registry
             self.tools = {}
-            for tool_info in registry.list_tools():
+            for tool_info in list_tools():
                 name = tool_info['name']
-                module = registry.get_tool(name)
-                config = registry.get_tool_config(name)
+                module = get_tool(name)
+                config = get_tool_config(name)
                 
                 if module and config:
                     # Define tool-specific argument handling
@@ -380,74 +327,46 @@ class RFSDNSFramework:
                         """Get the appropriate arguments for a tool in workflow mode"""
                         def workflow_args(domain, output, **kwargs):
                             # Base arguments that all tools should receive
-                            base_args = [
-                                '--domain', domain,
-                                '--output', output,
-                                '--framework-mode'
-                            ]
+                            args_dict = {
+                                'domain': domain,
+                                'output': output,
+                                'framework_mode': True
+                            }
                             
-                            # Add tool-specific arguments based on tool name
-                            if tool_name == 'dns_enum':
-                                base_args.extend([
-                                    '--record-types', 'A,AAAA,CNAME,MX,NS,TXT,SOA',
-                                    '--check-dnssec',
-                                    '--check-wildcards'
-                                ])
-                            elif tool_name == 'find_server':
-                                base_args.extend([
-                                    '--server-types', 'all',
-                                    '--check-version'
-                                ])
-                            elif tool_name == 'cloud_enum':
-                                base_args.extend([
-                                    '--provider', 'all',
-                                    '--check-dns',
-                                    '--check-http'
-                                ])
-                            elif tool_name == 'tld_brute':
-                                base_args.extend([
-                                    '--concurrent', '50',
-                                    '--check-whois'
-                                ])
-                            elif tool_name == 'takeover':
-                                base_args.extend([
-                                    '--providers', 'all',
-                                    '--verify-takeover'
-                                ])
-                            elif tool_name == 'seizure':
-                                base_args.extend([
-                                    '--check-whois',
-                                    '--check-dns',
-                                    '--check-http'
-                                ])
-                            elif tool_name == 'mobile_gw':
-                                base_args.extend([
-                                    '--gateway-type', 'all',
-                                    '--no-protocol-tests'
-                                ])
-                            elif tool_name == 'cache_poison':
-                                base_args.extend([
-                                    '--test-mode', 'passive',
-                                    '--randomize-qnames'
-                                ])
-                            elif tool_name == 'ssl_scanner':
-                                base_args.extend([
-                                    '--ports', '443,8443',
-                                    '--check-cert',
-                                    '--check-ciphers'
-                                ])
-                            elif tool_name == 'dns_takeover':
-                                base_args.extend([
-                                    '--providers', 'all',
-                                    '--verify-takeover',
-                                    '--include-inactive'
-                                ])
-                                
+                            # Add tool-specific arguments based on tool type
+                            if tool_name in ['dns_enum', 'tld_brute', 'zone_walker']:
+                                args_dict.update({
+                                    'record_types': 'A,AAAA,CNAME,MX,NS,TXT,SOA',
+                                    'check_dnssec': True,
+                                    'check_wildcards': True
+                                })
+                            elif tool_name in ['find_server']:
+                                args_dict.update({
+                                    'server_types': 'all',
+                                    'check_version': True
+                                })
+                            elif tool_name in ['cloud_enum']:
+                                args_dict.update({
+                                    'providers': 'all',
+                                    'services': 'all'
+                                })
+                            elif tool_name in ['takeover', 'dns_takeover']:
+                                args_dict.update({
+                                    'verify': True,
+                                    'include_passive': True
+                                })
+                            elif tool_name in ['ssl_scanner']:
+                                args_dict.update({
+                                    'ssl_ports': '443,8443',
+                                    'check_cert': True,
+                                    'check_ciphers': True
+                                })
+                            
                             # Add any extra arguments from kwargs
                             if kwargs.get('extra_args'):
-                                base_args.extend(kwargs['extra_args'])
-                                    
-                            return base_args
+                                args_dict.update(kwargs['extra_args'])
+                            
+                            return args_dict
                         return workflow_args
 
                     self.tools[name] = {
@@ -456,7 +375,7 @@ class RFSDNSFramework:
                         'critical': config['critical'],
                         'requires_root': config['requires_root'],
                         'order': config['order'],
-                        'script': config['file'],
+                        'file': config['file'],
                         'workflow_args': get_workflow_args(name)
                     }
                     self.console.print(f"[green]Loaded {name}")
@@ -573,9 +492,6 @@ class RFSDNSFramework:
             
             # Create tool instance
             if hasattr(module, 'main'):
-                # Start with the script name
-                cmd_args = [tool_info['script']]
-                
                 # Get workflow arguments for the tool
                 workflow_args_func = tool_info['workflow_args']
                 if workflow_args_func:
@@ -585,29 +501,46 @@ class RFSDNSFramework:
                     
                     # Get the workflow-specific arguments
                     args_list = workflow_args_func(domain=domain, output=output)
-                    cmd_args.extend(args_list)
-                
-                # Set up sys.argv for the tool
-                sys.argv = cmd_args
-                
-                # Run the tool
-                result = module.main()
-                
-                # Handle tool result
-                if isinstance(result, dict):
-                    if result.get('status') == 'error':
-                        self.console.print(f"[red]Error: {result.get('error')}")
-                        return False
                     
-                    # Update workflow results
-                    if 'risk_summary' in result:
-                        for level, count in result['risk_summary'].items():
-                            self.workflow_results['summary']['risk_summary'][level] += count
-                            if level == 'Critical':
-                                self.workflow_results['summary']['critical_findings'] += count
+                    # Convert args list to dictionary
+                    args_dict = {}
+                    i = 0
+                    while i < len(args_list):
+                        if args_list[i].startswith('--'):
+                            key = args_list[i][2:].replace('-', '_')  # Convert --arg-name to arg_name
+                            if i + 1 < len(args_list) and not args_list[i + 1].startswith('--'):
+                                args_dict[key] = args_list[i + 1]
+                                i += 2
+                            else:
+                                args_dict[key] = True  # Flag argument
+                                i += 1
+                        else:
+                            i += 1
                     
+                    # Update with any additional arguments from tool_args
+                    args_dict.update(tool_args)
+                    
+                    # Run the tool with the converted arguments
+                    result = module.main()
+                    
+                    # Handle tool result
+                    if isinstance(result, dict):
+                        if result.get('status') == 'error':
+                            self.console.print(f"[red]Error: {result.get('error')}")
+                            return False
+                        
+                        # Update workflow results
+                        if 'risk_summary' in result:
+                            for level, count in result['risk_summary'].items():
+                                self.workflow_results['summary']['risk_summary'][level] += count
+                                if level == 'Critical':
+                                    self.workflow_results['summary']['critical_findings'] += count
+                        
+                        return True
                     return True
-                return True
+                else:
+                    self.console.print(f"[red]Error: Tool '{tool_name}' has no workflow arguments configured")
+                    return False
             else:
                 self.console.print(f"[red]Error: Tool '{tool_name}' has no main() function")
                 return False
@@ -953,7 +886,7 @@ class RFSDNSFramework:
                 self.console.print("[yellow]Some features may be limited. Use --force to attempt all operations")
         
         # Get ordered tools from registry
-        ordered_tools = registry.get_ordered_tools()
+        ordered_tools = get_ordered_tools()
         
         with Progress() as progress:
             total_steps = len(ordered_tools)
@@ -1267,6 +1200,31 @@ class RFSDNSFramework:
         color = colors.get(risk_level, 'white')
         return f"[{color}]{risk_level}[/{color}]"
 
+def get_tool_parameters(tool_name: str) -> Dict[str, Any]:
+    """Get parameters for a specific tool based on its type and requirements"""
+    tool_config = registry.get_tool_config(tool_name)
+    if not tool_config:
+        return {}
+        
+    params = {}
+    
+    # Add common parameters
+    params.update(TOOL_PARAMETERS['common'])
+    
+    # Add tool-specific parameters based on tool type
+    if tool_name in ['dns_enum', 'tld_brute', 'zone_walker']:
+        params.update(TOOL_PARAMETERS['dns'])
+    elif tool_name in ['find_server']:
+        params.update(TOOL_PARAMETERS['server'])
+    elif tool_name in ['cloud_enum']:
+        params.update(TOOL_PARAMETERS['cloud'])
+    elif tool_name in ['takeover', 'dns_takeover', 'cache_poison']:
+        params.update(TOOL_PARAMETERS['security'])
+    elif tool_name in ['ssl_scanner']:
+        params.update(TOOL_PARAMETERS['ssl'])
+    
+    return params
+
 def create_argument_parser():
     """Create and configure the argument parser with all tool parameters"""
     parser = argparse.ArgumentParser(
@@ -1292,39 +1250,35 @@ def create_argument_parser():
     subparsers = parser.add_subparsers(dest='tool', help='Tool to run')
     
     # Add tool-specific subparsers
-    for tool_name, tool_config in TOOL_PARAMETERS.items():
-        if tool_name != 'common':  # Skip common parameters
-            tool_parser = subparsers.add_parser(
-                tool_name, 
-                help=tool_config['description'],
-                description=tool_config['description']
-            )
-            
-            # Add common parameters to tool parser
-            for param, config in TOOL_PARAMETERS['common'].items():
-                param_name = param.lstrip('-')
-                if 'action' in config:
-                    tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
-                else:
-                    tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
-            
-            # Add tool-specific parameters
-            for param, config in tool_config.get('parameters', {}).items():
-                param_name = param.lstrip('-')
-                if 'action' in config:
-                    tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
-                else:
-                    tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
+    for tool_info in list_tools():
+        tool_name = tool_info['name']
+        tool_parser = subparsers.add_parser(
+            tool_name,
+            help=tool_info['description'],
+            description=tool_info['description']
+        )
+        
+        # Get tool-specific parameters
+        tool_params = get_tool_parameters(tool_name)
+        
+        # Add parameters to tool parser
+        for param, config in tool_params.items():
+            param_name = param.lstrip('-')
+            if 'action' in config:
+                tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
+            else:
+                tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
 
     return parser
 
 def main():
     """Main entry point for the RFS DNS Framework"""
-    parser = create_argument_parser()
-    args = parser.parse_args()
-
     try:
         # Initialize framework
+        parser = create_argument_parser()
+        args = parser.parse_args()
+        
+        # Initialize framework with config
         framework = RFSDNSFramework(config_file=args.config)
         framework.display_banner()
 
