@@ -65,7 +65,7 @@ TOOL_PARAMETERS = {
     "common": {
         "--domain": {
             "help": "Target domain for analysis",
-            "required": False  # Required only for tools, not framework
+            "required": False
         },
         "--output": {
             "help": "Output file path for results",
@@ -94,247 +94,187 @@ TOOL_PARAMETERS = {
         "--nameserver": {
             "help": "Custom DNS nameserver to use",
             "required": False
+        },
+        "--format": {
+            "help": "Output format (json, csv, text)",
+            "choices": ["json", "csv", "text"],
+            "default": "json",
+            "required": False
         }
     },
     
-    # DNS Enumeration parameters
     "dns_enum": {
-        "--record-types": {
-            "help": "Comma-separated list of DNS record types to query",
-            "default": "A,AAAA,CNAME,MX,NS,TXT,SOA"
-        },
-        "--check-dnssec": {
-            "help": "Enable DNSSEC validation checks",
-            "action": "store_true"
-        },
-        "--check-wildcards": {
-            "help": "Check for wildcard DNS records",
-            "action": "store_true"
-        },
-        "--threads": {
-            "help": "Number of concurrent threads for queries",
-            "type": int,
-            "default": 10
-        },
-        "--wordlist": {
-            "help": "Path to subdomain wordlist file"
+        "description": "DNS Enumeration Tool",
+        "requires_root": False,
+        "critical": True,
+        "order": 1,
+        "parameters": {
+            "--record-types": {
+                "help": "DNS record types to query (comma-separated)",
+                "default": "A,AAAA,CNAME,MX,NS,TXT,SOA",
+                "required": False
+            },
+            "--check-dnssec": {
+                "help": "Enable DNSSEC validation",
+                "action": "store_true",
+                "required": False
+            },
+            "--check-wildcards": {
+                "help": "Check for wildcard DNS records",
+                "action": "store_true",
+                "required": False
+            },
+            "--wordlist": {
+                "help": "Path to subdomain wordlist",
+                "required": False
+            }
         }
     },
     
-    # DNS Zone Walker parameters
-    "zone_walker": {
-        "--nsec-mode": {
-            "help": "NSEC record walking mode",
-            "choices": ["nsec", "nsec3", "both"],
-            "default": "both"
-        },
-        "--aggressive": {
-            "help": "Enable aggressive zone walking",
-            "action": "store_true"
-        },
-        "--max-iterations": {
-            "help": "Maximum number of zone walking iterations",
-            "type": int,
-            "default": 1000
-        }
-    },
-    
-    # DNS Protocol Fuzzer parameters
-    "dns_protocol_fuzzer": {
-        "--mutation-rate": {
-            "help": "Rate of packet mutation (0.0-1.0)",
-            "type": float,
-            "default": 0.1
-        },
-        "--packet-count": {
-            "help": "Number of packets to send",
-            "type": int,
-            "default": 1000
-        },
-        "--target-port": {
-            "help": "Target DNS server port",
-            "type": int,
-            "default": 53
-        }
-    },
-    
-    # DNS Record Validator parameters
-    "dns_record_validator": {
-        "--check-all": {
-            "help": "Run all validation checks",
-            "action": "store_true"
-        },
-        "--validate-dnssec": {
-            "help": "Validate DNSSEC records",
-            "action": "store_true"
-        },
-        "--validate-spf": {
-            "help": "Validate SPF records",
-            "action": "store_true"
-        },
-        "--validate-dmarc": {
-            "help": "Validate DMARC records",
-            "action": "store_true"
-        }
-    },
-    
-    # DNS Security Scanner parameters
-    "dns_security_scanner": {
-        "--scan-type": {
-            "help": "Type of security scan to perform",
-            "choices": ["full", "quick", "custom"],
-            "default": "full"
-        },
-        "--custom-checks": {
-            "help": "Comma-separated list of custom security checks"
-        },
-        "--risk-level": {
-            "help": "Minimum risk level to report",
-            "choices": ["Low", "Medium", "High", "Critical"],
-            "default": "Low"
-        }
-    },
-    
-    # DNS Takeover Scanner parameters
-    "dns_takeover_scanner": {
-        "--providers": {
-            "help": "Comma-separated list of providers to check",
-            "default": "all"
-        },
-        "--verify-takeover": {
-            "help": "Attempt to verify potential takeovers",
-            "action": "store_true"
-        },
-        "--include-inactive": {
-            "help": "Include inactive/parked domains",
-            "action": "store_true"
-        }
-    },
-    
-    # DNS TLD Bruteforce parameters
-    "dns_tld_bruteforce": {
-        "--tld-list": {
-            "help": "Path to TLD wordlist file"
-        },
-        "--concurrent": {
-            "help": "Number of concurrent TLD checks",
-            "type": int,
-            "default": 50
-        },
-        "--check-whois": {
-            "help": "Perform WHOIS lookup for discovered TLDs",
-            "action": "store_true"
-        }
-    },
-    
-    # DNS Tunnel Detector parameters
-    "dns_tunnel_detector": {
-        "--detection-mode": {
-            "help": "Tunnel detection mode",
-            "choices": ["passive", "active", "hybrid"],
-            "default": "passive"
-        },
-        "--pcap-file": {
-            "help": "PCAP file to analyze"
-        },
-        "--interface": {
-            "help": "Network interface for live capture",
-            "default": "eth0"
-        },
-        "--threshold": {
-            "help": "Detection threshold score",
-            "type": float,
-            "default": 0.7
-        }
-    },
-    
-    # Cloud Provider Enumeration parameters
-    "cloud_enum": {
-        "--providers": {
-            "help": "Cloud providers to enumerate",
-            "choices": ["aws", "azure", "gcp", "all"],
-            "default": "all"
-        },
-        "--services": {
-            "help": "Specific services to enumerate",
-            "default": "all"
-        },
-        "--region": {
-            "help": "Specific region to focus on"
-        }
-    },
-    
-    # DNS Server Finder parameters
     "find_server": {
-        "--server-types": {
-            "help": "Types of DNS servers to find",
-            "choices": ["authoritative", "recursive", "all"],
-            "default": "all"
-        },
-        "--check-version": {
-            "help": "Attempt to determine server versions",
-            "action": "store_true"
-        },
-        "--port-scan": {
-            "help": "Perform port scan on discovered servers",
-            "action": "store_true"
+        "description": "DNS Server Discovery Tool",
+        "requires_root": False,
+        "critical": True,
+        "order": 2,
+        "parameters": {
+            "--server-types": {
+                "help": "Types of servers to find",
+                "choices": ["authoritative", "recursive", "all"],
+                "default": "all",
+                "required": False
+            },
+            "--check-version": {
+                "help": "Attempt to determine server versions",
+                "action": "store_true",
+                "required": False
+            }
         }
     },
     
-    # Mobile Gateway Enumeration parameters
+    "cloud_enum": {
+        "description": "Cloud Service Enumeration",
+        "requires_root": False,
+        "critical": True,
+        "order": 3,
+        "parameters": {
+            "--providers": {
+                "help": "Cloud providers to check",
+                "choices": ["aws", "azure", "gcp", "all"],
+                "default": "all",
+                "required": False
+            },
+            "--services": {
+                "help": "Services to enumerate (comma-separated)",
+                "default": "all",
+                "required": False
+            }
+        }
+    },
+    
+    "dns_takeover": {
+        "description": "DNS Takeover Scanner",
+        "requires_root": False,
+        "critical": True,
+        "order": 4,
+        "parameters": {
+            "--providers": {
+                "help": "Service providers to check",
+                "default": "all",
+                "required": False
+            },
+            "--verify-takeover": {
+                "help": "Verify potential takeover vulnerabilities",
+                "action": "store_true",
+                "required": False
+            },
+            "--include-inactive": {
+                "help": "Include inactive/parked domains",
+                "action": "store_true",
+                "required": False
+            }
+        }
+    },
+    
     "mobile_gw": {
-        "--gateway-types": {
-            "help": "Types of mobile gateways to enumerate",
-            "choices": ["sgw", "pgw", "mme", "all"],
-            "default": "all"
-        },
-        "--operator": {
-            "help": "Target mobile operator"
-        },
-        "--mcc": {
-            "help": "Mobile Country Code"
-        },
-        "--mnc": {
-            "help": "Mobile Network Code"
+        "description": "Mobile Gateway Scanner",
+        "requires_root": True,
+        "critical": False,
+        "order": 5,
+        "parameters": {
+            "--gateway-type": {
+                "help": "Type of mobile gateways to scan",
+                "choices": ["sgw", "pgw", "mme", "all"],
+                "default": "all",
+                "required": False
+            },
+            "--operator": {
+                "help": "Target mobile operator",
+                "required": False
+            },
+            "--mcc": {
+                "help": "Mobile Country Code",
+                "required": False
+            },
+            "--mnc": {
+                "help": "Mobile Network Code",
+                "required": False
+            }
         }
     },
     
-    # SSL Scanner parameters
     "ssl_scanner": {
-        "--ports": {
-            "help": "Ports to scan for SSL/TLS",
-            "default": "443,8443"
-        },
-        "--min-tls-version": {
-            "help": "Minimum acceptable TLS version",
-            "choices": ["1.0", "1.1", "1.2", "1.3"],
-            "default": "1.2"
-        },
-        "--check-ciphers": {
-            "help": "Check supported cipher suites",
-            "action": "store_true"
-        },
-        "--check-cert": {
-            "help": "Perform certificate validation",
-            "action": "store_true"
+        "description": "SSL/TLS Security Scanner",
+        "requires_root": False,
+        "critical": True,
+        "order": 6,
+        "parameters": {
+            "--ports": {
+                "help": "Ports to scan (comma-separated)",
+                "default": "443,8443",
+                "required": False
+            },
+            "--min-tls-version": {
+                "help": "Minimum acceptable TLS version",
+                "choices": ["1.0", "1.1", "1.2", "1.3"],
+                "default": "1.2",
+                "required": False
+            },
+            "--check-ciphers": {
+                "help": "Check supported cipher suites",
+                "action": "store_true",
+                "required": False
+            },
+            "--check-cert": {
+                "help": "Perform certificate validation",
+                "action": "store_true",
+                "required": False
+            }
         }
     },
     
-    # Cache Poisoning Detector parameters
     "cache_poison": {
-        "--test-mode": {
-            "help": "Cache poisoning test mode",
-            "choices": ["passive", "active", "both"],
-            "default": "passive"
-        },
-        "--query-rate": {
-            "help": "Query rate for testing",
-            "type": int,
-            "default": 100
-        },
-        "--randomize-qnames": {
-            "help": "Use random query names",
-            "action": "store_true"
+        "description": "DNS Cache Poisoning Detector",
+        "requires_root": True,
+        "critical": True,
+        "order": 7,
+        "parameters": {
+            "--test-mode": {
+                "help": "Cache poisoning test mode",
+                "choices": ["passive", "active", "both"],
+                "default": "passive",
+                "required": False
+            },
+            "--query-rate": {
+                "help": "Query rate for testing",
+                "type": int,
+                "default": 100,
+                "required": False
+            },
+            "--randomize-qnames": {
+                "help": "Use random query names",
+                "action": "store_true",
+                "required": False
+            }
         }
     }
 }
@@ -1327,8 +1267,8 @@ class RFSDNSFramework:
         color = colors.get(risk_level, 'white')
         return f"[{color}]{risk_level}[/{color}]"
 
-def main():
-    """Main entry point for the RFS DNS Framework"""
+def create_argument_parser():
+    """Create and configure the argument parser with all tool parameters"""
     parser = argparse.ArgumentParser(
         description="RFS DNS Framework - A comprehensive DNS reconnaissance and security assessment framework",
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -1346,15 +1286,19 @@ def main():
         if 'action' in config:
             parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
         else:
-            parser.add_argument(param, **config)
+            parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
 
     # Create subparsers for tools
     subparsers = parser.add_subparsers(dest='tool', help='Tool to run')
     
     # Add tool-specific subparsers
-    for tool_name, tool_params in TOOL_PARAMETERS.items():
+    for tool_name, tool_config in TOOL_PARAMETERS.items():
         if tool_name != 'common':  # Skip common parameters
-            tool_parser = subparsers.add_parser(tool_name, help=f'Run the {tool_name} tool')
+            tool_parser = subparsers.add_parser(
+                tool_name, 
+                help=tool_config['description'],
+                description=tool_config['description']
+            )
             
             # Add common parameters to tool parser
             for param, config in TOOL_PARAMETERS['common'].items():
@@ -1365,13 +1309,18 @@ def main():
                     tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
             
             # Add tool-specific parameters
-            for param, config in tool_params.items():
+            for param, config in tool_config.get('parameters', {}).items():
                 param_name = param.lstrip('-')
                 if 'action' in config:
                     tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
                 else:
-                    tool_parser.add_argument(param, **config)
+                    tool_parser.add_argument(param, **{k: v for k, v in config.items() if k != 'required'})
 
+    return parser
+
+def main():
+    """Main entry point for the RFS DNS Framework"""
+    parser = create_argument_parser()
     args = parser.parse_args()
 
     try:
@@ -1392,7 +1341,7 @@ def main():
         # Handle workflow execution
         if args.workflow:
             output_dir = args.output if args.output else os.path.join('results', args.domain)
-            report_format = 'html' if args.html_report else 'json'
+            report_format = args.format if hasattr(args, 'format') else 'json'
             framework.run_workflow(args.domain, output_dir, report_format, args.force)
             return 0
 
