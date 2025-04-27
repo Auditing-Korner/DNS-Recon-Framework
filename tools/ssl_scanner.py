@@ -20,6 +20,7 @@ import ssl
 import sys
 import os
 import json
+import argparse
 import requests
 from typing import Dict, List, Optional, Set, Any
 from datetime import datetime
@@ -29,21 +30,14 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.x509.oid import NameOID
 
-# Add parent directory to path for imports
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
-
-from tools.base_tool import BaseTool, ToolResult
+# Import tool interface
+from tool_interface import BaseTool, ToolResult
 
 class SSLScanner(BaseTool):
     """SSL/TLS Security Scanner Tool"""
     
-    def __init__(self):
-        super().__init__(
-            name="ssl_scanner",
-            description="SSL/TLS Security Scanner Tool"
-        )
+    def __init__(self, framework_mode: bool = False):
+        super().__init__(framework_mode)
         self.version = "2.1.0"
         self.resolver = dns.resolver.Resolver()
         self.resolver.timeout = 3
@@ -95,39 +89,61 @@ class SSLScanner(BaseTool):
                 }
             }
         }
+
+    def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
+        """Setup tool-specific command line arguments"""
+        parser.add_argument('domain', help='Target domain to scan')
+        parser.add_argument('--timeout', 
+                          type=int,
+                          default=5,
+                          help='Connection timeout in seconds')
+        parser.add_argument('--nameserver',
+                          help='Custom nameserver to use')
+        parser.add_argument('--no-subdomains',
+                          action='store_false',
+                          dest='check_subdomains',
+                          help='Disable subdomain enumeration')
+        parser.add_argument('--threads',
+                          type=int,
+                          default=10,
+                          help='Number of concurrent threads')
+        parser.add_argument('--output',
+                          help='Output file path')
         
-    def _run_tool(self, args: Any, result: ToolResult) -> None:
+    def _run_tool(self, args: argparse.Namespace) -> ToolResult:
         """Run SSL/TLS security scanning with provided arguments"""
-        domain = self.get_param('domain')
-        timeout = self.get_param('timeout', 5)
-        nameserver = self.get_param('nameserver')
-        check_subdomains = self.get_param('check_subdomains', True)
-        max_threads = int(self.get_param('threads', 10))
-        
-        # Update resolver timeout
-        self.resolver.timeout = timeout
-        self.resolver.lifetime = timeout
-        
-        # Set nameserver if provided
-        if nameserver:
-            self.resolver.nameservers = [nameserver]
-        
         try:
+            # Update resolver settings
+            self.resolver.timeout = args.timeout
+            self.resolver.lifetime = args.timeout
+            
+            if args.nameserver:
+                self.resolver.nameservers = [args.nameserver]
+            
+            # Add metadata
+            self.result.metadata.update({
+                "target_domain": args.domain,
+                "check_subdomains": args.check_subdomains,
+                "threads": args.threads,
+                "nameserver": args.nameserver or "default",
+                "timeout": args.timeout
+            })
+            
             # Get domains to check
-            domains = set([domain])
-            if check_subdomains:
-                subdomains = self._enumerate_subdomains(domain, result)
+            domains = set([args.domain])
+            if args.check_subdomains:
+                subdomains = self._enumerate_subdomains(args.domain)
                 domains.update(subdomains)
+                self.result.metadata["subdomain_count"] = len(subdomains)
             
             # Check each domain
-            with ThreadPoolExecutor(max_workers=max_threads) as executor:
+            with ThreadPoolExecutor(max_workers=args.threads) as executor:
                 futures = []
                 
                 for target in domains:
                     futures.append(executor.submit(
                         self._check_ssl,
-                        target,
-                        result
+                        target
                     ))
                 
                 # Wait for all tasks to complete
@@ -135,12 +151,17 @@ class SSLScanner(BaseTool):
                     try:
                         future.result()
                     except Exception as e:
-                        result.add_error(f"Error in SSL check: {str(e)}")
+                        self.log_message("error", f"Error in SSL check: {str(e)}")
+                
+            self.result.status = "completed"
+            return self.result
                 
         except Exception as e:
-            result.add_error(f"Error during SSL scanning: {str(e)}")
+            self.log_message("error", f"Error during SSL scanning: {str(e)}")
+            self.result.status = "error"
+            return self.result
             
-    def _enumerate_subdomains(self, domain: str, result: ToolResult) -> Set[str]:
+    def _enumerate_subdomains(self, domain: str) -> Set[str]:
         """Enumerate subdomains using various methods"""
         subdomains = set()
         
@@ -176,11 +197,11 @@ class SSLScanner(BaseTool):
                     continue
                     
         except Exception as e:
-            result.add_warning(f"Error enumerating subdomains: {str(e)}")
+            self.log_message("warning", f"Error enumerating subdomains: {str(e)}")
             
         return subdomains
 
-    def _check_ssl(self, domain: str, result: ToolResult) -> None:
+    def _check_ssl(self, domain: str) -> None:
         """Check SSL/TLS configuration for a domain"""
         try:
             # Check protocols and ciphers
@@ -199,11 +220,61 @@ class SSLScanner(BaseTool):
                     elif protocol == 'TLSv1.2':
                         context.protocol = ssl.PROTOCOL_TLSv1_2
                     elif protocol == 'TLSv1.3':
-                        context.protocol = ssl.PROTOCOL_TLS
-                        context.minimum_version = ssl.TLSVersion.TLSv1_3
-                    
+                        context.protocol = ssl.PROTOCOL_TLSv1_3
+                        
                     with socket.create_connection((domain, config['port']), timeout=self.resolver.timeout) as sock:
                         with context.wrap_socket(sock, server_hostname=domain) as ssock:
+                            supported_protocols[protocol] = True
+                            
+                            # Check certificate
+                            cert = ssock.getpeercert(binary_form=True)
+                            x509_cert = x509.load_der_x509_certificate(cert, default_backend())
+                            self._check_certificate(domain, x509_cert)
+                            
+                            # Check cipher suites
+                            cipher = ssock.cipher()
+                            if cipher:
+                                self._check_cipher_suite(domain, cipher)
+                                
+                except (socket.error, ssl.SSLError):
+                    supported_protocols[protocol] = False
+                    
+            # Add protocol findings
+            for protocol, supported in supported_protocols.items():
+                if supported and not self.checks['protocols'][protocol]['secure']:
+                    self.result.add_finding({
+                        'type': 'insecure_protocol',
+                        'protocol': protocol,
+                        'domain': domain,
+                        'description': f'Insecure protocol {protocol} is enabled',
+                        'risk_level': 'High',
+                        'recommendations': [
+                            f'Disable {protocol} support',
+                            'Enable only TLS 1.2 and TLS 1.3'
+                        ],
+                        'timestamp': datetime.now().isoformat()
+                    })
+                    
+            # Check security headers
+            try:
+                response = requests.get(f'https://{domain}', 
+                                     timeout=self.resolver.timeout,
+                                     verify=True)
+                self._check_security_headers(domain, response.headers)
+            except:
+                pass
+                
+        except Exception as e:
+            self.log_message("error", f"Error checking SSL for {domain}: {str(e)}")
+
+    def _check_certificate(self, domain: str, cert: x509.Certificate) -> None:
+        """Check certificate for security issues"""
+        try:
+            # Check key size
+            public_key = cert.public_key()
+            key_size = public_key.key_size
+            if key_size < self.checks['cert_issues']['weak_key']:
+                self.result.add_finding({
                             supported_protocols[protocol] = {
                                 'cipher': ssock.cipher(),
                                 'version': ssock.version()
