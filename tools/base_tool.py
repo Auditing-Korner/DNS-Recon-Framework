@@ -1,238 +1,219 @@
-#!/usr/bin/env python3
-"""
-Base Tool Class
+"""Base tool class for RFS DNS Framework."""
 
-Provides common functionality for all DNS tools:
-- Argument parsing
-- Result handling
-- Error management
-- Logging
-"""
-
-import argparse
-import json
-import sys
-import os
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Any, Optional
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+import json
+import os
 from datetime import datetime
-from rich.console import Console
 
+@dataclass
 class ToolResult:
-    """Class to store and manage tool execution results"""
-    
-    def __init__(self, success: bool = True, tool_name: str = "", findings: List[Dict] = None):
-        self.success = success
-        self.tool_name = tool_name
-        self.findings = findings or []
-        self.messages = []
-        self.warnings = []
-        self.errors = []
-        self.metadata = {
-            "timestamp": datetime.now().isoformat(),
-            "tool_name": tool_name
-        }
-        
-    def add_finding(self, finding: Dict) -> None:
-        """Add a finding to the results"""
-        self.findings.append(finding)
-        
-    def add_message(self, message: str) -> None:
-        """Add an informational message"""
-        self.messages.append(message)
-        
-    def add_warning(self, warning: str) -> None:
-        """Add a warning message"""
-        self.warnings.append(warning)
-        
-    def add_error(self, error: str) -> None:
-        """Add an error message"""
-        self.errors.append(error)
-        
-    def add_info(self, info: str) -> None:
-        """Add an informational message (alias for add_message)"""
-        self.add_message(info)
-        
-    def to_dict(self) -> Dict:
-        """Convert results to dictionary format"""
+    """Class to store and format tool execution results."""
+    success: bool
+    findings: List[Dict[str, Any]]
+    errors: List[str]
+    warnings: List[str]
+    start_time: str
+    end_time: str
+    tool_name: str
+    domain: str
+    output_file: str
+    risk_summary: Dict[str, int]
+    raw_data: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the result to a dictionary format."""
         return {
-            "success": self.success,
-            "tool_name": self.tool_name,
-            "findings": self.findings,
-            "messages": self.messages,
-            "warnings": self.warnings,
-            "errors": self.errors,
-            "metadata": self.metadata
+            'success': self.success,
+            'findings': self.findings,
+            'errors': self.errors,
+            'warnings': self.warnings,
+            'start_time': self.start_time,
+            'end_time': self.end_time,
+            'tool_name': self.tool_name,
+            'domain': self.domain,
+            'risk_summary': self.risk_summary,
+            'raw_data': self.raw_data
         }
 
-class BaseTool:
-    """Base class for all framework tools"""
+    def save_to_file(self) -> None:
+        """Save the results to the specified output file."""
+        if self.output_file:
+            os.makedirs(os.path.dirname(self.output_file), exist_ok=True)
+            with open(self.output_file, 'w') as f:
+                json.dump(self.to_dict(), f, indent=4)
+
+class BaseTool(ABC):
+    """Base class for all DNS recon tools."""
     
     def __init__(self, name: str, description: str):
-        self.name = name
-        self.description = description
-        self.version = "1.0.0"
-        self._params = {}
-        self._result = None
-        self.console = Console()
-        self.logger = logging.getLogger(self.__class__.__name__)
-        self.framework_mode = False
-        
-    def get_param(self, name: str, default: Any = None) -> Any:
-        """Get a parameter value by name"""
-        # Convert parameter name to argument format if needed
-        param_name = name.replace('-', '_')  # Convert dashes to underscores
-        
-        # Try getting from _params dict first
-        if isinstance(self._params, dict):
-            value = self._params.get(param_name, None)
-            if value is not None:
-                return value
-                
-        # If _params is a Namespace, try getting attribute
-        if hasattr(self._params, param_name):
-            return getattr(self._params, param_name)
-            
-        return default
-        
-    def get_params(self) -> Dict[str, Any]:
-        """Get all parameters"""
-        if isinstance(self._params, dict):
-            return self._params
-        elif hasattr(self._params, '__dict__'):
-            return vars(self._params)
-        return {}
-        
-    def set_param(self, name: str, value: Any) -> None:
-        """Set a parameter value"""
-        if isinstance(self._params, dict):
-            self._params[name] = value
-        else:
-            # Convert to dict if not already
-            self._params = {name: value}
-        
-    def set_params(self, params: Any) -> None:
-        """Set multiple parameters"""
-        if isinstance(params, dict):
-            self._params = params.copy()  # Make a copy to avoid modifying original
-        elif hasattr(params, '__dict__'):
-            self._params = vars(params).copy()
-        else:
-            self._params = params
-        
-        # Set framework mode if specified
-        self.framework_mode = self._params.get('framework_mode', False)
-        
-    def get_result(self) -> ToolResult:
-        """Get the tool result object"""
-        if self._result is None:
-            self._result = ToolResult(tool_name=self.name)
-        return self._result
-        
-    def _run_tool(self, args: Any, result: ToolResult) -> None:
         """
-        Run the tool implementation. Must be overridden by subclasses.
+        Initialize the base tool.
         
         Args:
-            args: The parsed arguments
-            result: ToolResult object to store findings
+            name: Tool name
+            description: Tool description
         """
-        raise NotImplementedError("Tool must implement _run_tool method")
-        
-    def main(self) -> Dict:
-        """Main entry point for running the tool"""
-        try:
-            # Create result object
-            result = self.get_result()
-            
-            # Run the tool with current parameters
-            self._run_tool(self._params, result)
-            
-            return result.to_dict()
-            
-        except Exception as e:
-            result = self.get_result()
-            result.success = False
-            result.add_error(f"Error running tool '{self.name}': {str(e)}")
-            return result.to_dict()
-            
-    def run(self, params: Dict[str, Any] = None) -> Dict:
-        """Run the tool with the given parameters"""
-        if params:
-            self.set_params(params)
-        return self.main()
+        self.name = name
+        self.description = description
+        self.logger = logging.getLogger(name)
+        self.findings = []
+        self.requires_root = False
+        self.critical = False
+        self.sequential = False
+        self.risk_levels = {
+            'Critical': 0,
+            'High': 0,
+            'Medium': 0,
+            'Low': 0,
+            'Info': 0
+        }
 
-    def log_message(self, level: str, message: str, context: Optional[Dict] = None):
-        """Unified logging that respects framework mode"""
-        if self.framework_mode:
-            if level == "error":
-                self._result.add_error(message)
-            elif level == "warning":
-                self._result.add_warning(message)
-            else:
-                self._result.add_message(message)
-        else:
-            if level == "error":
-                self.logger.error(message)
-            elif level == "warning":
-                self.logger.warning(message)
-            else:
-                self.logger.info(message)
-
-    def _print_results(self, result: ToolResult) -> None:
-        """Print results in a human-readable format"""
-        print(f"\n=== {self.name.upper()} Results ===\n")
+    @abstractmethod
+    def validate_args(self, args: Dict[str, Any]) -> bool:
+        """
+        Validate tool arguments.
         
-        if result.metadata:
-            print("Metadata:")
-            for key, value in result.metadata.items():
-                print(f"  {key}: {value}")
-            print()
-        
-        if result.findings:
-            print("Findings:")
-            for finding in result.findings:
-                risk_level = finding.get('risk_level', 'Info')
-                print(f"\n[{risk_level}] {finding.get('title', 'Untitled Finding')}")
-                if 'description' in finding:
-                    print(f"Description: {finding['description']}")
-                if 'details' in finding:
-                    print("Details:")
-                    if isinstance(finding['details'], dict):
-                        for key, value in finding['details'].items():
-                            print(f"  {key}: {value}")
-                    else:
-                        print(f"  {finding['details']}")
-                if 'recommendations' in finding:
-                    print("\nRecommendations:")
-                    for rec in finding['recommendations']:
-                        print(f"  - {rec}")
-            print()
-        
-        if result.errors:
-            print("\nErrors:")
-            for error in result.errors:
-                print(f"  - {error}")
-        
-        if result.warnings:
-            print("\nWarnings:")
-            for warning in result.warnings:
-                print(f"  - {warning}")
-        
-        print(f"\nStatus: {result.success}")
-        print(f"Execution time: {result.metadata['timestamp']}")
-
-def load_tool(tool_name: str) -> Optional[BaseTool]:
-    """Load a tool by name"""
-    try:
-        # Add the parent directory to sys.path
-        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        if parent_dir not in sys.path:
-            sys.path.append(parent_dir)
+        Args:
+            args: Tool arguments
             
-        # Import the tool module
-        module = __import__(f"tools.{tool_name}", fromlist=["main"])
-        return module.main()
-    except ImportError as e:
-        print(f"Error loading {tool_name}: {str(e)}")
-        return None 
+        Returns:
+            bool: True if arguments are valid
+        """
+        pass
+        
+    @abstractmethod
+    def run(self, args: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Run the tool.
+        
+        Args:
+            args: Tool arguments
+            
+        Returns:
+            List[Dict[str, Any]]: Tool findings
+        """
+        pass
+        
+    def get_tool_config(self) -> Dict[str, Any]:
+        """
+        Get tool configuration.
+        
+        Returns:
+            Dict[str, Any]: Tool configuration
+        """
+        return {
+            'name': self.name,
+            'description': self.description,
+            'requires_root': self.requires_root,
+            'critical': self.critical
+        }
+        
+    def add_finding(self, finding: Dict[str, Any]) -> None:
+        """
+        Add a finding to the tool's results.
+        
+        Args:
+            finding: Finding to add
+        """
+        self.findings.append(finding)
+        
+    def clear_findings(self) -> None:
+        """Clear all findings."""
+        self.findings = []
+        
+    def get_findings(self) -> List[Dict[str, Any]]:
+        """
+        Get all findings.
+        
+        Returns:
+            List[Dict[str, Any]]: All findings
+        """
+        return self.findings
+
+    def update_risk_summary(self, risk_level: str) -> None:
+        """
+        Update the risk level counters.
+        
+        Args:
+            risk_level: Risk level to increment
+        """
+        if risk_level in self.risk_levels:
+            self.risk_levels[risk_level] += 1
+
+    def create_finding(
+        self,
+        title: str,
+        description: str,
+        risk_level: str,
+        evidence: Optional[Dict[str, Any]] = None,
+        recommendations: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a standardized finding entry.
+        
+        Args:
+            title: Finding title
+            description: Detailed description
+            risk_level: Risk level (Critical, High, Medium, Low, Info)
+            evidence: Supporting evidence/data
+            recommendations: List of remediation steps
+            
+        Returns:
+            Dict[str, Any]: Formatted finding
+        """
+        self.update_risk_summary(risk_level)
+        
+        return {
+            'title': title,
+            'description': description,
+            'risk_level': risk_level,
+            'evidence': evidence or {},
+            'recommendations': recommendations or [],
+            'timestamp': datetime.now().isoformat()
+        }
+
+    def create_result(
+        self,
+        success: bool,
+        findings: List[Dict[str, Any]],
+        domain: str,
+        output_file: str,
+        errors: Optional[List[str]] = None,
+        warnings: Optional[List[str]] = None,
+        raw_data: Optional[Dict[str, Any]] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None
+    ) -> ToolResult:
+        """
+        Create a standardized tool result.
+        
+        Args:
+            success: Whether the tool executed successfully
+            findings: List of findings
+            domain: Target domain
+            output_file: Path to save results
+            errors: List of errors encountered
+            warnings: List of warnings
+            raw_data: Additional tool-specific data
+            start_time: Tool start time (ISO format)
+            end_time: Tool end time (ISO format)
+            
+        Returns:
+            ToolResult: Formatted tool result
+        """
+        return ToolResult(
+            success=success,
+            findings=findings,
+            errors=errors or [],
+            warnings=warnings or [],
+            start_time=start_time or datetime.now().isoformat(),
+            end_time=end_time or datetime.now().isoformat(),
+            tool_name=self.name,
+            domain=domain,
+            output_file=output_file,
+            risk_summary=self.risk_levels.copy(),
+            raw_data=raw_data or {}
+        ) 

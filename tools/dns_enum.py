@@ -1,230 +1,249 @@
-#!/usr/bin/env python3
-"""
-DNS Enumeration Tool
+"""DNS enumeration tool for RFS DNS Framework."""
 
-Performs comprehensive DNS enumeration and analysis:
-- Record enumeration
-- Zone transfers
-- Subdomain discovery
-- DNS security checks
-- Infrastructure analysis
-"""
-
+from typing import Dict, List, Any, Optional, Set
 import dns.resolver
 import dns.zone
-import dns.query
-import dns.name
-import dns.rdatatype
-import dns.flags
-import socket
-import sys
-import os
-import json
-import re
-import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Dict, List, Optional, Set, Tuple, Any
-from pathlib import Path
-import dns.dnssec
-import dns.message
-import dns.rdataclass
-import concurrent.futures
 
-# Import base tool and constants
-from tool_interface import BaseTool, ToolResult
-from constants import (
-    SMTP_SECURITY_CHECKS,
-    TAKEOVER_SIGNATURES,
-    SECURITY_HEADERS,
-    RECORD_TYPES,
-    DNSSEC_RECORD_TYPES,
-    DNSSEC_ALGORITHMS,
-    DNSSEC_DIGEST_TYPES
+from .base_tool import BaseTool, ToolResult
+from .utils import (
+    resolve_domain,
+    check_dnssec,
+    is_wildcard_domain,
+    get_domain_nameservers,
+    parallel_dns_query,
+    get_common_subdomains
 )
 
-class DNSEnumerator(BaseTool):
-    """DNS Enumeration and Analysis Tool"""
-    
-    def __init__(self, framework_mode: bool = False):
-        super().__init__(framework_mode)
-        self.version = "2.1.0"
-        self.resolver = dns.resolver.Resolver()
+TOOL_CONFIG = {
+    'name': 'dns_enum',
+    'description': 'DNS enumeration and reconnaissance',
+    'critical': True,
+    'requires_root': False,
+    'order': 1
+}
 
-    def setup_argparse(self, parser: argparse.ArgumentParser) -> None:
-        """Setup tool-specific command line arguments"""
-        parser.add_argument('domain', help='Target domain to enumerate')
-        parser.add_argument('--record-types', 
-                          default='A,AAAA,CNAME,MX,NS,TXT,SOA',
-                          help='Comma-separated list of record types to query')
-        parser.add_argument('--check-dnssec', 
-                          action='store_true',
-                          help='Enable DNSSEC checks')
-        parser.add_argument('--check-wildcards', 
-                          action='store_true',
-                          help='Enable wildcard DNS detection')
-        parser.add_argument('--nameserver',
-                          help='Custom nameserver to use')
-        parser.add_argument('--timeout',
-                          type=int,
-                          default=30,
-                          help='Query timeout in seconds')
+class DNSEnumTool(BaseTool):
+    """DNS enumeration tool implementation."""
+    
+    def __init__(self):
+        super().__init__(TOOL_CONFIG['name'], TOOL_CONFIG['description'])
+        self.requires_root = TOOL_CONFIG['requires_root']
+        self.critical = TOOL_CONFIG['critical']
+
+    def validate_args(self, **kwargs) -> List[str]:
+        """Validate tool arguments."""
+        errors = []
         
-    def _run_tool(self, args: argparse.Namespace) -> ToolResult:
-        """Run DNS enumeration with provided arguments"""
+        if not kwargs.get('domain'):
+            errors.append("Domain is required")
+            
+        record_types = kwargs.get('record_types', '').split(',')
+        valid_types = {'A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'PTR', 'SRV'}
+        invalid_types = set(record_types) - valid_types
+        if invalid_types:
+            errors.append(f"Invalid record types: {', '.join(invalid_types)}")
+            
+        return errors
+
+    def run(self, domain: str, output_file: str, **kwargs) -> ToolResult:
+        """Execute DNS enumeration."""
+        start_time = datetime.now().isoformat()
+        findings = []
+        errors = []
+        warnings = []
+        raw_data = {
+            'records': {},
+            'nameservers': [],
+            'dnssec': {},
+            'subdomains': [],
+            'wildcard': False
+        }
+        
         try:
-            # Configure resolver
-            if args.nameserver:
-                self.resolver.nameservers = [args.nameserver]
-            self.resolver.timeout = float(args.timeout)
-            self.resolver.lifetime = float(args.timeout)
+            # Get record types to query
+            record_types = kwargs.get('record_types', 'A,AAAA,CNAME,MX,NS,TXT,SOA').split(',')
+            nameserver = kwargs.get('nameserver')
+            check_wildcards = kwargs.get('check_wildcards', True)
+            check_dnssec_enabled = kwargs.get('check_dnssec', True)
+            wordlist = kwargs.get('wordlist')
             
-            # Add metadata
-            self.result.metadata["target_domain"] = args.domain
-            self.result.metadata["record_types"] = args.record_types.split(',')
-            self.result.metadata["nameserver"] = args.nameserver or "default"
+            # Check for wildcard records
+            if check_wildcards:
+                raw_data['wildcard'] = is_wildcard_domain(domain, nameserver)
+                if raw_data['wildcard']:
+                    warnings.append("Domain uses wildcard DNS records")
+                    findings.append(self.create_finding(
+                        title="Wildcard DNS Records Detected",
+                        description="The domain uses wildcard DNS records, which may affect enumeration accuracy",
+                        risk_level="Low",
+                        evidence={'wildcard_detected': True},
+                        recommendations=[
+                            "Review wildcard DNS configuration",
+                            "Consider limiting wildcard scope for better security"
+                        ]
+                    ))
             
-            # Check for wildcard DNS records if enabled
-            if args.check_wildcards:
-                self._check_wildcards(args.domain)
+            # Get nameservers
+            nameservers = get_domain_nameservers(domain)
+            raw_data['nameservers'] = nameservers
             
-            # Enumerate DNS records
-            for record_type in args.record_types.split(','):
-                try:
-                    answers = self.resolver.resolve(args.domain, record_type)
-                    for answer in answers:
-                        self.result.add_finding({
-                            'type': 'dns_record',
-                            'record_type': record_type,
-                            'value': str(answer),
-                            'description': f'Found {record_type} record for {args.domain}',
-                            'risk_level': 'Info',
-                            'timestamp': datetime.now().isoformat()
-                        })
-                except dns.resolver.NoAnswer:
-                    continue
-                except dns.resolver.NXDOMAIN:
-                    self.log_message("warning", f"Domain {args.domain} does not exist")
-                    break
-                except Exception as e:
-                    self.log_message("warning", f"Error querying {record_type} records: {str(e)}")
+            if not nameservers:
+                warnings.append("Could not find authoritative nameservers")
+            else:
+                findings.append(self.create_finding(
+                    title="Domain Nameservers",
+                    description=f"Found {len(nameservers)} authoritative nameservers",
+                    risk_level="Info",
+                    evidence={'nameservers': nameservers}
+                ))
             
-            # Check DNSSEC if enabled
-            if args.check_dnssec:
-                self._check_dnssec(args.domain)
+            # Query DNS records
+            results = parallel_dns_query(
+                [domain],
+                record_types,
+                nameserver,
+                max_workers=10
+            )
+            raw_data['records'] = results.get(domain, {})
             
-            # Set final status
-            self.result.status = "completed"
-            return self.result
+            # Analyze records for security issues
+            self._analyze_records(domain, raw_data['records'], findings)
             
-        except Exception as e:
-            self.log_message("error", f"Error during DNS enumeration: {str(e)}")
-            self.result.status = "error"
-            return self.result
-    
-    def _check_wildcards(self, domain: str) -> None:
-        """Check for wildcard DNS records"""
-        try:
-            # Generate a random subdomain
-            random_sub = f"wildcard-test-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            test_domain = f"{random_sub}.{domain}"
-            
-            # Try to resolve the random subdomain
-            try:
-                answers = self.resolver.resolve(test_domain, 'A')
-                self.result.add_finding({
-                    'type': 'wildcard_dns',
-                    'domain': domain,
-                    'test_domain': test_domain,
-                    'description': 'Wildcard DNS record detected',
-                    'details': [str(rdata) for rdata in answers],
-                    'risk_level': 'Medium',
-                    'recommendations': [
-                        'Review wildcard DNS configuration',
-                        'Ensure wildcards are intentional and necessary',
-                        'Consider security implications of wildcard records'
-                    ],
-                    'timestamp': datetime.now().isoformat()
-                })
-            except dns.resolver.NXDOMAIN:
-                # No wildcard record found - this is normal
-                pass
-            except Exception as e:
-                self.log_message("warning", f"Error checking wildcard records: {str(e)}")
+            # Check DNSSEC
+            if check_dnssec_enabled:
+                dnssec_info = check_dnssec(domain)
+                raw_data['dnssec'] = dnssec_info
                 
-        except Exception as e:
-            self.log_message("warning", f"Error during wildcard check: {str(e)}")
-    
-    def _check_dnssec(self, domain: str) -> None:
-        """Check DNSSEC configuration"""
-        try:
-            # Check for DNSSEC records
-            for record_type in DNSSEC_RECORD_TYPES:
-                try:
-                    answers = self.resolver.resolve(domain, record_type)
-                    for answer in answers:
-                        finding = {
-                            'type': 'dnssec_record',
-                            'record_type': record_type,
-                            'value': str(answer),
-                            'description': f'Found DNSSEC {record_type} record',
-                            'risk_level': 'Info',
-                            'timestamp': datetime.now().isoformat()
-                        }
-                        
-                        # Add algorithm information for DNSKEY records
-                        if record_type == 'DNSKEY':
-                            algorithm = DNSSEC_ALGORITHMS.get(answer.algorithm, 'Unknown')
-                            finding['details'] = {
-                                'algorithm': algorithm,
-                                'key_tag': answer.key_tag(),
-                                'flags': answer.flags
-                            }
-                            
-                            # Check for deprecated algorithms
-                            if answer.algorithm in [1, 3, 5, 6, 7]:
-                                finding['risk_level'] = 'High'
-                                finding['recommendations'] = [
-                                    'Update DNSSEC to use modern algorithms',
-                                    'Consider using RSA/SHA-256 or ECDSA'
-                                ]
-                        
-                        self.result.add_finding(finding)
-                        
-                except dns.resolver.NoAnswer:
-                    continue
-                except Exception as e:
-                    self.log_message("warning", f"Error checking {record_type} records: {str(e)}")
+                if not dnssec_info.get('enabled'):
+                    findings.append(self.create_finding(
+                        title="DNSSEC Not Enabled",
+                        description="Domain does not have DNSSEC enabled",
+                        risk_level="Medium",
+                        recommendations=[
+                            "Enable DNSSEC for improved DNS security",
+                            "Implement proper key management for DNSSEC"
+                        ]
+                    ))
+                else:
+                    findings.append(self.create_finding(
+                        title="DNSSEC Configuration",
+                        description="Domain has DNSSEC enabled and properly configured",
+                        risk_level="Info",
+                        evidence=dnssec_info
+                    ))
+            
+            # Enumerate subdomains
+            if wordlist:
+                subdomains = get_common_subdomains(domain, wordlist)
+                raw_data['subdomains'] = list(subdomains)
+                
+                if subdomains:
+                    findings.append(self.create_finding(
+                        title="Subdomain Enumeration",
+                        description=f"Found {len(subdomains)} subdomains",
+                        risk_level="Info",
+                        evidence={'subdomains': list(subdomains)}
+                    ))
+            
+            success = True
             
         except Exception as e:
-            self.log_message("warning", f"Error during DNSSEC check: {str(e)}")
+            success = False
+            errors.append(f"DNS enumeration failed: {str(e)}")
+        
+        end_time = datetime.now().isoformat()
+        
+        # Create and return result
+        result = self.create_result(
+            success=success,
+            findings=findings,
+            domain=domain,
+            output_file=output_file,
+            errors=errors,
+            warnings=warnings,
+            raw_data=raw_data,
+            start_time=start_time,
+            end_time=end_time
+        )
+        
+        # Save results
+        result.save_to_file()
+        
+        return result
+
+    def _analyze_records(self, domain: str, records: Dict[str, List[str]], findings: List[Dict[str, Any]]) -> None:
+        """Analyze DNS records for security issues."""
+        
+        # Check for SPF records
+        txt_records = records.get('TXT', [])
+        has_spf = any('v=spf1' in record.lower() for record in txt_records)
+        
+        if not has_spf:
+            findings.append(self.create_finding(
+                title="Missing SPF Record",
+                description="Domain does not have an SPF record configured",
+                risk_level="Medium",
+                recommendations=[
+                    "Configure SPF record to prevent email spoofing",
+                    "Define authorized mail servers in SPF record"
+                ]
+            ))
+        
+        # Check for DMARC record
+        try:
+            dmarc_records = resolve_domain(f"_dmarc.{domain}", 'TXT')
+            has_dmarc = any('v=dmarc1' in record.lower() for record in dmarc_records)
+            
+            if not has_dmarc:
+                findings.append(self.create_finding(
+                    title="Missing DMARC Record",
+                    description="Domain does not have a DMARC record configured",
+                    risk_level="Medium",
+                    recommendations=[
+                        "Configure DMARC record for email authentication",
+                        "Start with monitoring policy before enforcement"
+                    ]
+                ))
+        except:
+            pass
+        
+        # Check for dangling CNAME records
+        cname_records = records.get('CNAME', [])
+        for cname in cname_records:
+            try:
+                if not resolve_domain(cname, 'A'):
+                    findings.append(self.create_finding(
+                        title="Dangling CNAME Record",
+                        description=f"CNAME record points to non-existent domain: {cname}",
+                        risk_level="High",
+                        evidence={'cname': cname},
+                        recommendations=[
+                            "Remove or update dangling CNAME record",
+                            "Regularly audit DNS records for validity"
+                        ]
+                    ))
+            except:
+                continue
+        
+        # Check for exposed internal names
+        internal_patterns = ['.local', '.internal', '.corp', '.lan']
+        for record_type, values in records.items():
+            for value in values:
+                if any(pattern in value.lower() for pattern in internal_patterns):
+                    findings.append(self.create_finding(
+                        title="Exposed Internal Hostname",
+                        description=f"DNS record contains internal hostname: {value}",
+                        risk_level="Medium",
+                        evidence={'record_type': record_type, 'value': value},
+                        recommendations=[
+                            "Remove exposed internal hostnames from public DNS",
+                            "Use separate internal/external DNS zones"
+                        ]
+                    ))
 
 def main():
-    """Main entry point for standalone tool execution"""
-    tool = DNSEnumerator()
-    
-    # Setup argument parser
-    parser = argparse.ArgumentParser(description="DNS Enumeration Tool")
-    tool.setup_argparse(parser)
-    
-    # Parse arguments
-    args = parser.parse_args()
-    
-    # Run the tool
-    result = tool.run(args)
-    
-    # Save results
-    if not os.path.exists('results/dns_enum'):
-        os.makedirs('results/dns_enum')
-        
-    output_file = f'results/dns_enum/{args.domain}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
-    tool.save_results(output_file)
-    
-    # Generate HTML report
-    html_file = output_file.replace('.json', '.html')
-    tool.generate_html_report(html_file)
-    
-    return 0
-
-if __name__ == '__main__':
-    sys.exit(main())
-        
+    """Tool entry point."""
+    tool = DNSEnumTool()
+    return tool 

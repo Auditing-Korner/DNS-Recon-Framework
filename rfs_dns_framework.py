@@ -287,6 +287,11 @@ class RFSDNSFramework:
             }
         }
 
+        # Ensure tools directory exists
+        if not self.tools_dir.exists():
+            self.logger.error(f"Tools directory not found: {self.tools_dir}")
+            return
+
         # Load tools
         self._load_tools()
 
@@ -309,12 +314,11 @@ class RFSDNSFramework:
         if self.tools_loaded:
             return
 
-        if not self.tools_dir.exists():
-            self.console.print(f"[red]Error: Tools directory '{self.tools_dir}' not found")
-            return
-
         try:
-            # Get all available tools from registry
+            # Initialize tool registry
+            registry.discover_tools(str(self.tools_dir))
+            
+            # Get all available tools
             self.tools = {}
             for tool_info in list_tools():
                 name = tool_info['name']
@@ -378,12 +382,12 @@ class RFSDNSFramework:
                         'file': config['file'],
                         'workflow_args': get_workflow_args(name)
                     }
-                    self.console.print(f"[green]Loaded {name}")
+                    self.logger.info(f"Loaded {name}")
                 else:
-                    self.console.print(f"[yellow]Warning: Tool {name} not properly configured")
+                    self.logger.warning(f"Tool {name} not properly configured")
             
         except Exception as e:
-            self.console.print(f"[red]Error loading tools: {e}")
+            self.logger.error(f"Error loading tools: {e}")
             raise
         
         self.tools_loaded = True
@@ -862,343 +866,218 @@ class RFSDNSFramework:
             raise
 
     def run_workflow(self, domain: str, output_dir: str, report_format: str = "json", force: bool = False):
-        """Run a complete DNS analysis workflow"""
-        self.console.print(f"[blue]Starting comprehensive DNS analysis for {domain}")
+        """
+        Run the complete DNS analysis workflow.
         
-        # Create output directory
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Store workflow metadata
-        self.workflow_results.update({
+        Args:
+            domain: Target domain
+            output_dir: Output directory for results
+            report_format: Report format (json/html)
+            force: Force execution even with insufficient privileges
+        """
+        start_time = datetime.now()
+        workflow_summary = {
             'domain': domain,
-            'output_dir': output_dir,
-            'start_time': datetime.now().isoformat(),
-            'tools': {}
-        })
+            'start_time': start_time.isoformat(),
+            'tools': {},
+            'findings': [],
+            'errors': [],
+            'warnings': [],
+            'risk_summary': {
+                'Critical': 0,
+                'High': 0,
+                'Medium': 0,
+                'Low': 0,
+                'Info': 0
+            }
+        }
         
-        # Check for root privileges if needed
-        has_privs, priv_type = check_privileges()
-        if not has_privs:
-            if force:
-                self.console.print(f"[yellow]Warning: Running without {priv_type} (forced)")
-            else:
-                self.console.print(f"[yellow]Warning: Running without {priv_type}")
-                self.console.print("[yellow]Some features may be limited. Use --force to attempt all operations")
+        # Create output directory structure
+        domain_dir = os.path.join(output_dir, domain)
+        os.makedirs(domain_dir, exist_ok=True)
         
-        # Get ordered tools from registry
+        # Get ordered list of tools to run
         ordered_tools = get_ordered_tools()
+        total_tools = len(ordered_tools)
+        completed_tools = 0
+        failed_tools = 0
         
         with Progress() as progress:
-            total_steps = len(ordered_tools)
-            task = progress.add_task("[cyan]Running workflow...", total=total_steps)
+            task = progress.add_task("Running workflow...", total=total_tools)
             
-            # Create thread pool for parallel execution where possible
-            with ThreadPoolExecutor(max_workers=3) as executor:
-                future_to_tool = {}
-                
-                for tool_name, tool_config in ordered_tools:
-                    # Skip tools requiring root if we don't have it and not forcing
-                    if tool_config.get('requires_root') and not has_privs and not force:
-                        self.console.print(f"[yellow]Skipping {tool_name} (requires {priv_type})")
+            for tool_name, tool_config in ordered_tools:
+                try:
+                    # Create tool-specific output directory
+                    tool_dir = os.path.join(domain_dir, tool_name)
+                    os.makedirs(tool_dir, exist_ok=True)
+                    
+                    # Check tool requirements
+                    can_run, error_msg = self.check_tool_requirements(tool_name)
+                    if not can_run and not force:
+                        workflow_summary['warnings'].append(f"Skipping {tool_name}: {error_msg}")
                         continue
                     
-                    step_output = os.path.join(output_dir, f"{tool_name}_results.json")
-                    step_dir = os.path.join(output_dir, tool_name)
+                    # Prepare tool arguments
+                    tool_args = {
+                        'domain': domain,
+                        'output': os.path.join(tool_dir, f"{tool_name}_results.json"),
+                        'framework_mode': True
+                    }
                     
-                    self.console.print(f"\n[yellow]Running {tool_config['description']}")
+                    # Add tool-specific parameters from config
+                    if tool_name in self.config.get('tool_params', {}):
+                        tool_args.update(self.config['tool_params'][tool_name])
                     
-                    try:
-                        # Create results directory for this step
-                        os.makedirs(step_dir, exist_ok=True)
+                    # Run the tool
+                    logging.info(f"Running {tool_name}...")
+                    success = self.run_tool(tool_name, tool_args, force)
+                    
+                    if success:
+                        completed_tools += 1
+                        # Process tool results
+                        result_file = tool_args['output']
+                        if os.path.exists(result_file):
+                            with open(result_file) as f:
+                                result_data = json.load(f)
+                                
+                            # Update workflow summary
+                            workflow_summary['tools'][tool_name] = {
+                                'status': 'completed',
+                                'findings': len(result_data.get('findings', [])),
+                                'errors': result_data.get('errors', []),
+                                'warnings': result_data.get('warnings', [])
+                            }
+                            
+                            # Aggregate findings and update risk summary
+                            for finding in result_data.get('findings', []):
+                                workflow_summary['findings'].append({
+                                    'tool': tool_name,
+                                    'title': finding.get('title', ''),
+                                    'risk_level': finding.get('risk_level', 'Info'),
+                                    'description': finding.get('description', '')
+                                })
+                                
+                                risk_level = finding.get('risk_level', 'Info')
+                                if risk_level in workflow_summary['risk_summary']:
+                                    workflow_summary['risk_summary'][risk_level] += 1
+                    else:
+                        failed_tools += 1
+                        workflow_summary['tools'][tool_name] = {
+                            'status': 'failed',
+                            'errors': [f"Tool execution failed"]
+                        }
                         
-                        # Get tool-specific arguments
-                        extra_args = []
-                        
-                        # Add nameserver if tool requires it
-                        if tool_config.get('requires_nameserver'):
-                            nameservers = self.detect_nameservers(domain)
-                            if nameservers:
-                                extra_args.extend(['--nameserver', nameservers[0]])
-                        
-                        # Get tool arguments
-                        args = self.tools[tool_name]['workflow_args'](
-                            domain=domain,
-                            output=step_output,
-                            extra_args=extra_args
-                        )
-                        
-                        # Submit tool execution to thread pool if it's safe to run in parallel
-                        if not tool_config.get('requires_root') and not tool_config.get('sequential'):
-                            future = executor.submit(self.run_tool, tool_name, args, force)
-                            future_to_tool[future] = (tool_name, tool_config, step_output, step_dir)
-                        else:
-                            # Run sequentially for tools that require root or need to be run sequentially
-                            success = self.run_tool(tool_name, args, force)
-                            self._handle_tool_result(tool_name, tool_config, step_output, step_dir, success)
-                            progress.update(task, advance=1)
-                        
-                    except Exception as e:
-                        error_msg = f"Error setting up {tool_name}: {str(e)}"
-                        self.console.print(f"[red]{error_msg}")
-                        self._handle_tool_error(tool_name, tool_config, str(e))
-                        progress.update(task, advance=1)
+                except Exception as e:
+                    failed_tools += 1
+                    error_msg = f"Error running {tool_name}: {str(e)}"
+                    logging.error(error_msg)
+                    workflow_summary['errors'].append(error_msg)
+                    workflow_summary['tools'][tool_name] = {
+                        'status': 'error',
+                        'errors': [str(e)]
+                    }
                 
-                # Process completed parallel tools
-                for future in as_completed(future_to_tool):
-                    tool_name, tool_config, step_output, step_dir = future_to_tool[future]
-                    try:
-                        success = future.result()
-                        self._handle_tool_result(tool_name, tool_config, step_output, step_dir, success)
-                    except Exception as e:
-                        error_msg = f"Error in {tool_name}: {str(e)}"
-                        self.console.print(f"[red]{error_msg}")
-                        self._handle_tool_error(tool_name, tool_config, str(e))
-                    
+                finally:
                     progress.update(task, advance=1)
         
-        # Update workflow completion time
-        self.workflow_results['end_time'] = datetime.now().isoformat()
+        # Complete workflow summary
+        end_time = datetime.now()
+        workflow_summary.update({
+            'end_time': end_time.isoformat(),
+            'duration': str(end_time - start_time),
+            'total_tools': total_tools,
+            'completed_tools': completed_tools,
+            'failed_tools': failed_tools,
+            'completion_rate': f"{(completed_tools/total_tools)*100:.1f}%"
+        })
         
         # Save workflow summary
-        summary_file = os.path.join(output_dir, "workflow_summary.json")
-        try:
-            with open(summary_file, 'w') as f:
-                json.dump(self.workflow_results, f, indent=4)
-            self.console.print(f"\n[green]Workflow summary saved to {summary_file}")
-        except Exception as e:
-            self.console.print(f"[red]Error saving workflow summary: {e}")
+        summary_file = os.path.join(domain_dir, 'workflow_summary.json')
+        with open(summary_file, 'w') as f:
+            json.dump(workflow_summary, f, indent=4)
         
-        # Generate reports
-        if report_format in ["html", "both"]:
-            html_report = os.path.join(output_dir, "report.html")
-            self.generate_html_report(self.workflow_results, html_report)
+        # Generate report if requested
+        if report_format == 'html':
+            report_file = os.path.join(domain_dir, 'report.html')
+            self.generate_html_report(workflow_summary, report_file)
         
-        # Display final summary
-        self.display_workflow_summary()
+        # Display workflow summary
+        self.display_workflow_summary(workflow_summary)
+        
+        return workflow_summary
 
-    def _handle_tool_result(self, tool_name: str, tool_config: Dict[str, Any], 
-                          step_output: str, step_dir: str, success: bool) -> None:
-        """Handle the result of a tool execution"""
-        tool_result = {
-            'success': success,
-            'output_file': step_output if success else None,
-            'output_dir': step_dir,
-            'timestamp': datetime.now().isoformat(),
-            'critical': tool_config.get('critical', False)
-        }
+    def display_workflow_summary(self, summary: Dict[str, Any]):
+        """Display workflow execution summary."""
+        console = Console()
         
-        # Load and merge tool-specific results if available
-        if success and os.path.exists(step_output):
-            try:
-                with open(step_output) as f:
-                    tool_data = json.load(f)
-                    tool_result.update(tool_data)
-                    
-                    # Update risk summary
-                    if 'risk_summary' in tool_data:
-                        for level, count in tool_data['risk_summary'].items():
-                            self.workflow_results['summary']['risk_summary'][level] = \
-                                self.workflow_results['summary']['risk_summary'].get(level, 0) + count
-            except Exception as e:
-                self.console.print(f"[yellow]Warning: Could not load results for {tool_name}: {e}")
-        
-        self.workflow_results['tools'][tool_name] = tool_result
-        
-        # Update summary
-        self.workflow_results['summary']['total_tools'] += 1
-        if success:
-            self.workflow_results['summary']['successful_tools'] += 1
-        else:
-            self.workflow_results['summary']['failed_tools'] += 1
-            if tool_config.get('critical'):
-                self.workflow_results['summary']['critical_findings'] += 1
-
-    def _handle_tool_error(self, tool_name: str, tool_config: Dict[str, Any], error: str) -> None:
-        """Handle a tool execution error"""
-        self.workflow_results['tools'][tool_name] = {
-            'success': False,
-            'error': error,
-            'timestamp': datetime.now().isoformat(),
-            'critical': tool_config.get('critical', False)
-        }
-        self.workflow_results['summary']['failed_tools'] += 1
-        if tool_config.get('critical'):
-            self.workflow_results['summary']['critical_findings'] += 1
-
-    def display_workflow_summary(self):
-        """Display a comprehensive summary of the workflow results"""
-        summary = self.workflow_results['summary']
-        
-        # Create header banner
-        header = Panel(
-            f"[bold blue]DNS Analysis Results for {self.workflow_results['domain']}[/bold blue]\n"
-            f"[cyan]Framework Version:[/cyan] {self.version}\n"
-            f"[cyan]Scan Date:[/cyan] {self.workflow_results.get('start_time', 'N/A')}",
+        # Create header
+        console.print("\n")
+        console.print(Panel.fit(
+            "[bold]RFS DNS Framework[/bold]\n"
+            f"DNS Analysis Results for {summary['domain']}\n"
+            f"Framework Version: {self.version}",
             title="RFS DNS Framework",
-            title_align="center",
             border_style="blue"
-        )
-        self.console.print("\n", header)
+        ))
+        console.print("\n")
         
-        # Create main summary table with better styling
-        table = Table(
-            title="Scan Summary",
-            title_style="bold magenta",
-            show_header=True,
-            header_style="bold cyan",
-            border_style="blue",
-            padding=(0, 2)
-        )
-        table.add_column("Metric", style="cyan", justify="right")
-        table.add_column("Value", style="yellow", justify="left")
-        table.add_column("Details", style="green")
+        # Create scan summary table
+        scan_table = Table(title="Scan Summary", show_header=True)
+        scan_table.add_column("Metric", style="cyan")
+        scan_table.add_column("Value", justify="right")
+        scan_table.add_column("Details", justify="left")
         
-        # Add summary statistics with improved formatting
-        total_tools = summary['total_tools']
-        successful = summary['successful_tools']
-        failed = summary['failed_tools']
-        
-        table.add_row(
+        scan_table.add_row(
             "Total Tools",
-            str(total_tools),
+            str(summary['total_tools']),
             ""
         )
-        table.add_row(
+        scan_table.add_row(
             "Successful",
-            f"[green]{successful}[/green]",
-            f"[green]{(successful/total_tools*100):.1f}% completion rate[/green]"
+            str(summary['completed_tools']),
+            f"{summary['completion_rate']} completion rate"
         )
-        table.add_row(
+        scan_table.add_row(
             "Failed",
-            f"[red]{failed}[/red]",
-            f"[red]{(failed/total_tools*100):.1f}% failure rate[/red]"
+            str(summary['failed_tools']),
+            f"{(summary['failed_tools']/summary['total_tools'])*100:.1f}% failure rate"
         )
-        table.add_row(
+        scan_table.add_row(
             "Critical Findings",
-            f"[red bold]{summary['critical_findings']}[/red bold]",
-            "[red]Immediate attention required[/red]" if summary['critical_findings'] > 0 else "[green]No critical issues[/green]"
+            str(summary['risk_summary']['Critical']),
+            "No critical issues" if summary['risk_summary']['Critical'] == 0 else "Review required"
         )
         
-        self.console.print("\n", table)
+        console.print(scan_table)
+        console.print("\n")
         
-        # Display risk summary
-        risk_table = Table(
-            title="Risk Analysis",
-            title_style="bold red",
-            show_header=True,
-            header_style="bold white",
-            border_style="red"
-        )
-        risk_table.add_column("Risk Level", style="white")
-        risk_table.add_column("Count", justify="center")
+        # Create risk analysis table
+        risk_table = Table(title="Risk Analysis", show_header=True)
+        risk_table.add_column("Risk Level", style="cyan")
+        risk_table.add_column("Count", justify="right")
         risk_table.add_column("Percentage", justify="right")
         
-        total_risks = sum(summary['risk_summary'].values())
-        if total_risks > 0:
-            for level, count in summary['risk_summary'].items():
-                color = {
-                    'Critical': 'red',
-                    'High': 'orange1',
-                    'Medium': 'yellow',
-                    'Low': 'green',
-                    'Info': 'blue'
-                }.get(level, 'white')
-                
-                percentage = (count / total_risks * 100) if total_risks > 0 else 0
-                risk_table.add_row(
-                    f"[{color}]{level}[/{color}]",
-                    f"[{color}]{count}[/{color}]",
-                    f"[{color}]{percentage:.1f}%[/{color}]"
-                )
+        total_findings = sum(summary['risk_summary'].values())
+        for level, count in summary['risk_summary'].items():
+            percentage = (count/total_findings)*100 if total_findings > 0 else 0
+            risk_table.add_row(
+                level,
+                str(count),
+                f"{percentage:.1f}%"
+            )
         
-        self.console.print("\n", risk_table)
+        console.print(risk_table)
+        console.print("\n")
         
-        # Display tool-specific results with enhanced formatting
-        tool_table = Table(
-            title="Tool Results",
-            title_style="bold magenta",
-            show_header=True,
-            header_style="bold cyan",
-            border_style="blue",
-            padding=(0, 1)
+        # Display execution time
+        time_panel = Panel(
+            f"Start Time: {summary['start_time'].split('.')[0]}\n"
+            f"End Time: {summary['end_time'].split('.')[0]}\n"
+            f"Duration: {summary['duration']}",
+            title="Execution Time",
+            border_style="blue"
         )
-        tool_table.add_column("Tool", style="cyan")
-        tool_table.add_column("Status", style="green", justify="center")
-        tool_table.add_column("Critical", style="red", justify="center")
-        tool_table.add_column("Findings", style="yellow")
-        tool_table.add_column("Risk Level", style="magenta")
-        
-        for tool_name, result in self.workflow_results['tools'].items():
-            status = "[green]✓[/green]" if result.get('success') else "[red]✗[/red]"
-            critical = "[red]Yes[/red]" if result.get('critical') else "[blue]No[/blue]"
-            
-            # Extract findings count and risk level
-            findings = "N/A"
-            risk_level = "[green]Low[/green]"
-            
-            if 'findings' in result:
-                if isinstance(result['findings'], list):
-                    findings = str(len(result['findings']))
-                    if len(result['findings']) > 0:
-                        highest_risk = max((f.get('risk_level', 'Low') for f in result['findings']), default='Low')
-                        risk_level = self._format_risk_level(highest_risk)
-                elif isinstance(result['findings'], dict):
-                    findings = str(sum(result['findings'].values()))
-            
-            if 'error' in result:
-                findings = f"[red]Error: {result['error']}[/red]"
-                risk_level = "[red]Error[/red]"
-            
-            tool_table.add_row(tool_name, status, critical, findings, risk_level)
-        
-        self.console.print("\n", tool_table)
-        
-        # Display timing information with better formatting
-        if 'start_time' in self.workflow_results and 'end_time' in self.workflow_results:
-            start = datetime.fromisoformat(self.workflow_results['start_time'])
-            end = datetime.fromisoformat(self.workflow_results['end_time'])
-            duration = end - start
-            
-            time_panel = Panel(
-                f"[cyan]Start Time:[/cyan] {start.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"[cyan]End Time:[/cyan] {end.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"[cyan]Duration:[/cyan] {duration}",
-                title="Execution Time",
-                title_align="center",
-                border_style="blue",
-                padding=(1, 2)
-            )
-            self.console.print("\n", time_panel)
-        
-        # Display recommendations if there are issues
-        if summary['critical_findings'] > 0 or summary['failed_tools'] > 0:
-            recommendations = []
-            
-            if summary['critical_findings'] > 0:
-                recommendations.append("[red]• Address critical security findings immediately[/red]")
-            if summary['failed_tools'] > 0:
-                recommendations.append("[yellow]• Investigate and resolve tool failures[/yellow]")
-            
-            rec_panel = Panel(
-                "\n".join(recommendations),
-                title="Recommendations",
-                title_align="center",
-                border_style="yellow",
-                padding=(1, 2)
-            )
-            self.console.print("\n", rec_panel)
-
-    def _format_risk_level(self, risk_level):
-        """Format risk level with appropriate color"""
-        colors = {
-            'Critical': 'red',
-            'High': 'orange1',
-            'Medium': 'yellow',
-            'Low': 'green',
-            'Info': 'blue'
-        }
-        color = colors.get(risk_level, 'white')
-        return f"[{color}]{risk_level}[/{color}]"
+        console.print(time_panel)
 
 def get_tool_parameters(tool_name: str) -> Dict[str, Any]:
     """Get parameters for a specific tool based on its type and requirements"""

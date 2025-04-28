@@ -1,170 +1,236 @@
-#!/usr/bin/env python3
-"""
-TLD Bruteforce Tool
+"""TLD bruteforce tool for RFS DNS Framework."""
 
-Discovers registered top-level domains for a given name:
-- Tests against all IANA TLDs
-- Validates DNS records
-- Checks domain registration
-- Identifies defensive registrations
-- Maps brand presence
-"""
-
+from typing import Dict, List, Any, Optional, Set
 import dns.resolver
-import dns.name
-import dns.rdatatype
-import dns.exception
-import whois
-import sys
-import os
-import json
-from typing import Dict, List, Optional, Set, Any
-from datetime import datetime
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+import json
+import os
 
-# Add parent directory to path for imports
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
+from .base_tool import BaseTool, ToolResult
+from .utils import (
+    resolve_domain,
+    is_domain_registered,
+    parallel_dns_query
+)
 
-from tools.base_tool import BaseTool, ToolResult
+TOOL_CONFIG = {
+    'name': 'tld_brute',
+    'description': 'TLD bruteforcing and enumeration',
+    'critical': False,
+    'requires_root': False,
+    'order': 4
+}
 
-class TLDBruteforcer(BaseTool):
-    """TLD Bruteforce Tool"""
+class TLDBruteTool(BaseTool):
+    """TLD bruteforce tool implementation."""
     
     def __init__(self):
-        super().__init__(
-            name="tld_brute",
-            description="TLD Bruteforce Tool"
-        )
-        self.version = "2.1.0"
-        self.resolver = dns.resolver.Resolver()
-        self.resolver.timeout = 3
-        self.resolver.lifetime = 3
+        super().__init__(TOOL_CONFIG['name'], TOOL_CONFIG['description'])
+        self.requires_root = TOOL_CONFIG['requires_root']
+        self.critical = TOOL_CONFIG['critical']
         
         # Load TLD list
-        self.tlds = self._load_tlds()
-        
-    def _run_tool(self, args: Any, result: ToolResult) -> None:
-        """Run TLD bruteforce with provided arguments"""
-        domain = self.get_param('domain').split('.')[0]  # Get base name
-        timeout = self.get_param('timeout', 5)
-        nameserver = self.get_param('nameserver')
-        check_whois = self.get_param('check_whois', True)
-        max_threads = int(self.get_param('threads', 10))
-        
-        # Update resolver timeout
-        self.resolver.timeout = timeout
-        self.resolver.lifetime = timeout
-        
-        # Set nameserver if provided
-        if nameserver:
-            self.resolver.nameservers = [nameserver]
-        
-        try:
-            # Check each TLD
-            with ThreadPoolExecutor(max_workers=max_threads) as executor:
-                futures = []
-                
-                for tld in self.tlds:
-                    test_domain = f"{domain}.{tld}"
-                    futures.append(executor.submit(
-                        self._check_domain,
-                        test_domain,
-                        check_whois,
-                        result
-                    ))
-                
-                # Wait for all tasks to complete
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as e:
-                        result.add_error(f"Error in TLD check: {str(e)}")
-                
-        except Exception as e:
-            result.add_error(f"Error during TLD bruteforce: {str(e)}")
-            
-    def _load_tlds(self) -> List[str]:
-        """Load list of TLDs from file or use default list"""
-        try:
-            tld_file = Path(__file__).parent / 'data' / 'tlds.txt'
-            if tld_file.exists():
-                with open(tld_file) as f:
-                    return [line.strip().lower() for line in f if line.strip()]
-        except:
-            pass
-            
-        # Return default list if file not found
-        return [
-            'com', 'net', 'org', 'info', 'biz', 'edu', 'gov', 'mil',
-            'us', 'uk', 'ca', 'au', 'de', 'jp', 'fr', 'ru', 'ch', 'it',
-            'nl', 'se', 'no', 'es', 'mil', 'io', 'co', 'ai', 'app', 'dev'
-        ]
+        self.tld_list = self._load_tld_list()
 
-    def _check_domain(self, domain: str, check_whois: bool, result: ToolResult) -> None:
-        """Check if domain exists and gather information"""
-        try:
-            # Check DNS records
-            found_records = {}
-            for record_type in ['A', 'AAAA', 'MX', 'NS', 'TXT']:
-                try:
-                    answers = dns.resolver.resolve(domain, record_type)
-                    found_records[record_type] = [str(rr) for rr in answers]
-                except:
-                    continue
+    def validate_args(self, **kwargs) -> List[str]:
+        """Validate tool arguments."""
+        errors = []
+        
+        if not kwargs.get('domain'):
+            errors.append("Domain is required")
             
-            if found_records:
-                finding = {
-                    'title': "Domain Registered",
-                    'description': f"Found active DNS records for {domain}",
-                    'risk_level': "Info",
-                    'details': {
-                        'domain': domain,
-                        'records': found_records
-                    },
-                    'recommendations': [
-                        'Verify domain ownership',
-                        'Review DNS configuration',
-                        'Monitor domain activity'
-                    ]
+        if kwargs.get('custom_tlds'):
+            try:
+                custom_tlds = kwargs['custom_tlds'].split(',')
+                if not all(tld.strip('.').isalnum() for tld in custom_tlds):
+                    errors.append("Invalid TLD format in custom TLDs")
+            except:
+                errors.append("Invalid custom TLDs format")
+                
+        return errors
+
+    def run(self, domain: str, output_file: str, **kwargs) -> ToolResult:
+        """Execute TLD bruteforce."""
+        start_time = datetime.now().isoformat()
+        findings = []
+        errors = []
+        warnings = []
+        raw_data = {
+            'registered_domains': [],
+            'dns_records': {},
+            'similar_content': []
+        }
+        
+        try:
+            # Get base domain without TLD
+            base_domain = domain.split('.')[0]
+            
+            # Get TLDs to check
+            tlds_to_check = set(self.tld_list)
+            if kwargs.get('custom_tlds'):
+                tlds_to_check.update(kwargs['custom_tlds'].split(','))
+            
+            # Remove the original domain's TLD from the list
+            original_tld = domain.split('.')[-1]
+            tlds_to_check.discard(original_tld)
+            
+            # Check domain registration across TLDs
+            registered_domains = []
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                future_to_tld = {
+                    executor.submit(
+                        self._check_domain_variation,
+                        base_domain,
+                        tld
+                    ): tld
+                    for tld in tlds_to_check
                 }
                 
-                # Check WHOIS if enabled
-                if check_whois:
+                for future in as_completed(future_to_tld):
+                    tld = future_to_tld[future]
                     try:
-                        w = whois.whois(domain)
-                        if w.domain_name:
-                            finding['details']['whois'] = {
-                                'registrar': w.registrar,
-                                'creation_date': str(w.creation_date[0] if isinstance(w.creation_date, list) else w.creation_date),
-                                'expiration_date': str(w.expiration_date[0] if isinstance(w.expiration_date, list) else w.expiration_date),
-                                'name_servers': w.name_servers if isinstance(w.name_servers, list) else [w.name_servers] if w.name_servers else []
-                            }
-                            
-                            # Check for potential defensive registration
-                            if not found_records.get('A') and not found_records.get('AAAA'):
-                                finding['title'] = "Potential Defensive Registration"
-                                finding['description'] = f"Domain {domain} registered but not resolving"
-                                finding['risk_level'] = "Low"
-                                finding['recommendations'].extend([
-                                    'Confirm defensive registration strategy',
-                                    'Monitor for cybersquatting',
-                                    'Review domain portfolio'
-                                ])
-                    except:
-                        pass
-                        
-                result.add_finding(finding)
+                        result = future.result()
+                        if result:
+                            registered_domains.append(result)
+                    except Exception as e:
+                        errors.append(f"Error checking .{tld}: {str(e)}")
+            
+            raw_data['registered_domains'] = registered_domains
+            
+            if registered_domains:
+                findings.append(self.create_finding(
+                    title="Domain Variations Found",
+                    description=f"Found {len(registered_domains)} registered domain variations",
+                    risk_level="Medium",
+                    evidence={'domains': registered_domains},
+                    recommendations=[
+                        "Register important TLD variations to prevent typosquatting",
+                        "Monitor registered variations for malicious activity",
+                        "Consider trademark protection services"
+                    ]
+                ))
                 
+                # Check DNS records for registered domains
+                record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT']
+                for registered_domain in registered_domains:
+                    results = parallel_dns_query(
+                        [registered_domain],
+                        record_types,
+                        max_workers=5
+                    )
+                    if results:
+                        raw_data['dns_records'][registered_domain] = results[registered_domain]
+                        
+                        # Check for similar DNS configurations
+                        if self._check_similar_configuration(
+                            results[registered_domain],
+                            raw_data['dns_records'].get(domain, {})
+                        ):
+                            raw_data['similar_content'].append(registered_domain)
+                            findings.append(self.create_finding(
+                                title="Similar DNS Configuration Found",
+                                description=f"Domain {registered_domain} has similar DNS configuration",
+                                risk_level="High",
+                                evidence={
+                                    'domain': registered_domain,
+                                    'records': results[registered_domain]
+                                },
+                                recommendations=[
+                                    "Investigate potential domain squatting",
+                                    "Consider legal action if trademark infringement found",
+                                    "Monitor domain for malicious activity"
+                                ]
+                            ))
+            
+            success = True
+            
         except Exception as e:
-            result.add_warning(f"Error checking domain {domain}: {str(e)}")
+            success = False
+            errors.append(f"TLD bruteforce failed: {str(e)}")
+        
+        end_time = datetime.now().isoformat()
+        
+        # Create and return result
+        result = self.create_result(
+            success=success,
+            findings=findings,
+            domain=domain,
+            output_file=output_file,
+            errors=errors,
+            warnings=warnings,
+            raw_data=raw_data,
+            start_time=start_time,
+            end_time=end_time
+        )
+        
+        # Save results
+        result.save_to_file()
+        
+        return result
+
+    def _load_tld_list(self) -> List[str]:
+        """Load list of TLDs to check."""
+        common_tlds = [
+            'com', 'net', 'org', 'info', 'biz', 'edu',
+            'gov', 'mil', 'app', 'dev', 'io', 'ai',
+            'co', 'me', 'us', 'uk', 'ca', 'au', 'de',
+            'fr', 'es', 'it', 'nl', 'ru', 'cn', 'jp',
+            'br', 'in', 'cloud', 'online', 'store', 'tech',
+            'xyz', 'site', 'web', 'blog', 'app', 'dev'
+        ]
+        
+        # Try to load additional TLDs from file
+        tld_file = os.path.join(
+            os.path.dirname(__file__),
+            'data',
+            'tlds.txt'
+        )
+        
+        if os.path.exists(tld_file):
+            try:
+                with open(tld_file) as f:
+                    return list(set(
+                        tld.strip().lower()
+                        for tld in f.readlines()
+                        if tld.strip()
+                    ))
+            except:
+                pass
+        
+        return common_tlds
+
+    def _check_domain_variation(self, base_domain: str, tld: str) -> Optional[str]:
+        """Check if a domain variation is registered."""
+        variation = f"{base_domain}.{tld}"
+        try:
+            if is_domain_registered(variation):
+                return variation
+        except:
+            pass
+        return None
+
+    def _check_similar_configuration(
+        self,
+        records1: Dict[str, List[str]],
+        records2: Dict[str, List[str]]
+    ) -> bool:
+        """Check if two DNS configurations are similar."""
+        if not records2:
+            return False
+            
+        # Check for identical records
+        for record_type in ['A', 'AAAA', 'MX']:
+            if (
+                record_type in records1 and
+                record_type in records2 and
+                set(records1[record_type]) == set(records2[record_type])
+            ):
+                return True
+        
+        return False
 
 def main():
-    """Entry point for TLD bruteforcer"""
-    tool = TLDBruteforcer()
-    return tool.main()
-
-if __name__ == "__main__":
-    main() 
+    """Tool entry point."""
+    tool = TLDBruteTool()
+    return tool 

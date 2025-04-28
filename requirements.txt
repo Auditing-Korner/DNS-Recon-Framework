@@ -58,4 +58,10 @@ markdown>=3.5.0
 
 # Added from the code block
 pyyaml>=6.0.1
-python-dateutil>=2.8.2  # For timestamp handling 
+python-dateutil>=2.8.2  # For timestamp handling
+
+# SSL/TLS Scanning Dependencies
+sslyze>=5.2.0
+pyOpenSSL>=24.0.0
+nassl>=5.1.0
+tlslite-ng>=0.8.0 

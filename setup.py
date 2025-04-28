@@ -2,63 +2,48 @@
 
 from setuptools import setup, find_packages
 
-with open("README.md", "r", encoding="utf-8") as fh:
-    long_description = fh.read()
-
-with open("requirements.txt", "r", encoding="utf-8") as fh:
-    requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
-
 setup(
     name="rfs-dns-framework",
-    version="1.0",
+    version="2.1.0",
+    description="RFS DNS Framework - A comprehensive DNS reconnaissance and security assessment framework",
     author="rfs85",
-    author_email="rfs85@github.com",
-    description="A comprehensive DNS security testing framework",
-    long_description=long_description,
-    long_description_content_type="text/markdown",
+    author_email="",  # Add author email if available
     url="https://github.com/rfs85/RFS-DNS-Framework",
     packages=find_packages(),
+    include_package_data=True,
+    install_requires=[
+        "rich>=10.0.0",
+        "dnspython>=2.4.2",
+        "requests>=2.31.0",
+        "pyyaml>=6.0.1",
+        "jinja2>=3.0.0",
+        "scapy>=2.4.5",
+        "ipaddress>=1.0.23",
+        "cryptography>=42.0.2",
+        "pyopenssl>=24.0.0",
+        "sslyze>=5.2.0",
+        "nassl>=5.1.0",
+        "tlslite-ng>=0.8.0",
+        "python-dateutil>=2.8.2",
+    ],
+    entry_points={
+        'console_scripts': [
+            'rfs-dns-framework=rfs_dns_framework:main',
+        ],
+    },
     classifiers=[
         "Development Status :: 4 - Beta",
+        "Environment :: Console",
         "Intended Audience :: Information Technology",
-        "Topic :: Security",
         "License :: OSI Approved :: MIT License",
+        "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.8",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Topic :: Security",
+        "Topic :: System :: Networking",
     ],
     python_requires=">=3.8",
-    install_requires=requirements,
-    entry_points={
-        "console_scripts": [
-            "rfs-dns=rfs_dns_framework.rfs_dns_framework:main",
-        ],
-    },
-    include_package_data=True,
-    package_data={
-        "rfs_dns_framework": [
-            "data/*",
-            "config/*.yaml",
-        ],
-    },
-    extras_require={
-        "cloud": [
-            "boto3>=1.26.0",
-            "azure-mgmt-dns>=8.0.0",
-            "google-cloud-dns>=0.34.0",
-        ],
-        "mobile": [
-            "scapy>=2.4.5",
-            "pyshark>=0.4.3",
-        ],
-        "dev": [
-            "pytest>=7.0.0",
-            "pytest-cov>=4.0.0",
-            "black>=22.0.0",
-            "isort>=5.0.0",
-            "mypy>=1.0.0",
-        ],
-    },
 ) 

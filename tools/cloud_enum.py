@@ -1,345 +1,290 @@
-#!/usr/bin/env python3
-"""
-Cloud Service Enumeration Tool
-
-Detects and analyzes cloud service usage:
-- AWS resources and services
-- Azure resources and endpoints
-- GCP resources and projects
-- Multi-cloud configurations
-- Service dependencies
-"""
+"""Cloud resource enumeration tool for RFS DNS Framework."""
 
 import dns.resolver
 import dns.name
-import dns.rdatatype
 import dns.exception
-import requests
-import sys
-import os
-import json
-from typing import Dict, List, Optional, Set, Any
-from datetime import datetime
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+import re
+from typing import Dict, List, Optional, Any, Set
+from .base_tool import BaseTool
+import ipaddress
 
-# Add parent directory to path for imports
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if parent_dir not in sys.path:
-    sys.path.append(parent_dir)
+# Tool configuration
+TOOL_CONFIG = {
+    'name': 'cloud_enum',
+    'description': 'Cloud resource enumeration tool',
+    'critical': False,
+    'requires_root': False,
+    'order': 6
+}
 
-from tools.base_tool import BaseTool, ToolResult
-
-class CloudEnumerator(BaseTool):
-    """Cloud Service Enumeration Tool"""
+class CloudEnumTool(BaseTool):
+    """Tool for enumerating cloud resources associated with a domain."""
     
     def __init__(self):
-        super().__init__(
-            name="cloud_enum",
-            description="Cloud Service Enumeration Tool"
-        )
-        self.version = "2.1.0"
-        self.resolver = dns.resolver.Resolver()
-        self.resolver.timeout = 3
-        self.resolver.lifetime = 3
+        super().__init__(TOOL_CONFIG['name'], TOOL_CONFIG['description'])
+        self.requires_root = TOOL_CONFIG['requires_root']
+        self.critical = TOOL_CONFIG['critical']
+        self.findings = []
         
-        # Initialize cloud service signatures
-        self.signatures = {
+        # Cloud service patterns
+        self.cloud_patterns = {
             'aws': {
                 'domains': [
-                    'amazonaws.com',
-                    'cloudfront.net',
-                    'awsglobalaccelerator.com'
+                    r'\.s3\.amazonaws\.com$',
+                    r'\.cloudfront\.net$',
+                    r'\.elb\.amazonaws\.com$',
+                    r'\.elasticbeanstalk\.com$',
+                    r'\.awsglobalaccelerator\.com$'
                 ],
                 'services': {
-                    's3': {
-                        'patterns': [
-                            's3.amazonaws.com',
-                            's3-website'
-                        ],
-                        'http_check': True
-                    },
-                    'cloudfront': {
-                        'patterns': [
-                            'cloudfront.net'
-                        ],
-                        'http_check': True
-                    },
-                    'elasticbeanstalk': {
-                        'patterns': [
-                            'elasticbeanstalk.com'
-                        ],
-                        'http_check': True
-                    }
+                    's3': r'\.s3\.amazonaws\.com$',
+                    'cloudfront': r'\.cloudfront\.net$',
+                    'elb': r'\.elb\.amazonaws\.com$',
+                    'elasticbeanstalk': r'\.elasticbeanstalk\.com$',
+                    'globalaccelerator': r'\.awsglobalaccelerator\.com$'
                 }
             },
             'azure': {
                 'domains': [
-                    'azure.com',
-                    'azurewebsites.net',
-                    'cloudapp.net'
+                    r'\.azurewebsites\.net$',
+                    r'\.blob\.core\.windows\.net$',
+                    r'\.azure-api\.net$',
+                    r'\.azurecontainer\.io$',
+                    r'\.azureedge\.net$'
                 ],
                 'services': {
-                    'webapp': {
-                        'patterns': [
-                            'azurewebsites.net'
-                        ],
-                        'http_check': True
-                    },
-                    'storage': {
-                        'patterns': [
-                            'blob.core.windows.net',
-                            'file.core.windows.net'
-                        ],
-                        'http_check': True
-                    },
-                    'cdn': {
-                        'patterns': [
-                            'azureedge.net'
-                        ],
-                        'http_check': True
-                    }
+                    'web_apps': r'\.azurewebsites\.net$',
+                    'storage': r'\.blob\.core\.windows\.net$',
+                    'api_management': r'\.azure-api\.net$',
+                    'container': r'\.azurecontainer\.io$',
+                    'cdn': r'\.azureedge\.net$'
                 }
             },
             'gcp': {
                 'domains': [
-                    'googleapis.com',
-                    'appspot.com',
-                    'cloudfunctions.net'
+                    r'\.appspot\.com$',
+                    r'\.googleapis\.com$',
+                    r'\.run\.app$',
+                    r'\.cloudfunctions\.net$',
+                    r'\.storage\.googleapis\.com$'
                 ],
                 'services': {
-                    'appengine': {
-                        'patterns': [
-                            'appspot.com'
-                        ],
-                        'http_check': True
-                    },
-                    'storage': {
-                        'patterns': [
-                            'storage.googleapis.com'
-                        ],
-                        'http_check': True
-                    },
-                    'functions': {
-                        'patterns': [
-                            'cloudfunctions.net'
-                        ],
-                        'http_check': True
-                    }
+                    'app_engine': r'\.appspot\.com$',
+                    'apis': r'\.googleapis\.com$',
+                    'cloud_run': r'\.run\.app$',
+                    'functions': r'\.cloudfunctions\.net$',
+                    'storage': r'\.storage\.googleapis\.com$'
                 }
             }
         }
-        
-    def _run_tool(self, args: Any, result: ToolResult) -> None:
-        """Run cloud service enumeration with provided arguments"""
-        domain = self.get_param('domain')
-        timeout = self.get_param('timeout', 5)
-        nameserver = self.get_param('nameserver')
-        providers = self.get_param('providers', 'all').split(',')
-        check_http = self.get_param('check_http', True)
-        max_threads = int(self.get_param('threads', 10))
-        
-        # Update resolver timeout
-        self.resolver.timeout = timeout
-        self.resolver.lifetime = timeout
-        
-        # Set nameserver if provided
-        if nameserver:
-            self.resolver.nameservers = [nameserver]
-        
-        try:
-            # Get subdomains first
-            subdomains = self._enumerate_subdomains(domain, result)
-            if not subdomains:
-                result.add_warning("No subdomains found to check")
-                return
-            
-            # Check each provider if specified
-            with ThreadPoolExecutor(max_workers=max_threads) as executor:
-                futures = []
-                
-                for provider, config in self.signatures.items():
-                    if 'all' in providers or provider in providers:
-                        # Submit tasks for each subdomain
-                        for subdomain in subdomains:
-                            futures.append(executor.submit(
-                                self._check_cloud_usage,
-                                subdomain,
-                                provider,
-                                config,
-                                check_http,
-                                result
-                            ))
-                
-                # Wait for all tasks to complete
-                for future in as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as e:
-                        result.add_error(f"Error in cloud check: {str(e)}")
-                
-        except Exception as e:
-            result.add_error(f"Error during cloud enumeration: {str(e)}")
-            
-    def _enumerate_subdomains(self, domain: str, result: ToolResult) -> Set[str]:
-        """Enumerate subdomains using various methods"""
-        subdomains = set()
-        
-        try:
-            # Try zone transfer first
-            try:
-                ns_records = dns.resolver.resolve(domain, 'NS')
-                for ns in ns_records:
-                    try:
-                        xfr = dns.query.xfr(str(ns), domain)
-                        zone = dns.zone.from_xfr(xfr)
-                        for name, node in zone.nodes.items():
-                            subdomain = str(name)
-                            if subdomain != '@':
-                                subdomains.add(f"{subdomain}.{domain}")
-                    except:
-                        continue
-            except:
-                pass
-            
-            # Try common record types
-            for record_type in ['A', 'AAAA', 'CNAME', 'MX', 'TXT']:
-                try:
-                    answers = dns.resolver.resolve(domain, record_type)
-                    for rdata in answers:
-                        if record_type == 'MX':
-                            subdomains.add(str(rdata.exchange).rstrip('.'))
-                        elif record_type == 'CNAME':
-                            subdomains.add(str(rdata.target).rstrip('.'))
-                        else:
-                            subdomains.add(str(rdata))
-                except:
-                    continue
-                    
-        except Exception as e:
-            result.add_warning(f"Error enumerating subdomains: {str(e)}")
-            
-        return subdomains
 
-    def _check_cloud_usage(self, subdomain: str, provider: str, config: Dict,
-                          check_http: bool, result: ToolResult) -> None:
-        """Check subdomain for cloud service usage"""
-        try:
-            # Check DNS records
-            for record_type in ['CNAME', 'A']:
-                try:
-                    records = dns.resolver.resolve(subdomain, record_type)
-                    for record in records:
-                        target = str(record.target if record_type == 'CNAME' else record)
-                        
-                        # Check against provider domains
-                        for domain in config['domains']:
-                            if domain in target:
-                                # Found cloud usage, check specific services
-                                for service, service_config in config['services'].items():
-                                    for pattern in service_config['patterns']:
-                                        if pattern in target:
-                                            finding = {
-                                                'title': f"{provider.upper()} Service Detected",
-                                                'description': f"Found {service} usage on {subdomain}",
-                                                'risk_level': "Info",
-                                                'details': {
-                                                    'subdomain': subdomain,
-                                                    'provider': provider,
-                                                    'service': service,
-                                                    'target': target,
-                                                    'record_type': record_type
-                                                }
-                                            }
-                                            
-                                            # Add service-specific recommendations
-                                            if service == 's3':
-                                                finding['recommendations'] = [
-                                                    'Verify bucket permissions',
-                                                    'Enable bucket encryption',
-                                                    'Configure access logging'
-                                                ]
-                                            elif service in ['cloudfront', 'cdn']:
-                                                finding['recommendations'] = [
-                                                    'Enable HTTPS only',
-                                                    'Configure WAF rules',
-                                                    'Review caching policies'
-                                                ]
-                                            elif 'storage' in service:
-                                                finding['recommendations'] = [
-                                                    'Review storage access policies',
-                                                    'Enable encryption at rest',
-                                                    'Configure monitoring'
-                                                ]
-                                            else:
-                                                finding['recommendations'] = [
-                                                    'Review service configuration',
-                                                    'Enable logging and monitoring',
-                                                    'Follow security best practices'
-                                                ]
-                                            
-                                            result.add_finding(finding)
-                                            
-                                            # Check HTTP if enabled
-                                            if check_http and service_config.get('http_check', False):
-                                                self._check_http_endpoint(subdomain, result)
-                except:
-                    continue
-                    
-        except Exception as e:
-            result.add_warning(f"Error checking cloud usage for {subdomain}: {str(e)}")
+    def validate_args(self, args: Dict[str, Any]) -> bool:
+        """
+        Validate tool arguments.
+        
+        Args:
+            args: Tool arguments
+            
+        Returns:
+            bool: True if arguments are valid
+        """
+        if not args.get('domain'):
+            logging.error('Domain argument is required')
+            return False
+        return True
 
-    def _check_http_endpoint(self, subdomain: str, result: ToolResult) -> None:
-        """Check HTTP endpoint for additional information"""
+    def check_cloud_association(self, domain: str, record_type: str = 'CNAME') -> List[Dict[str, Any]]:
+        """
+        Check if a domain is associated with cloud services.
+        
+        Args:
+            domain: Domain to check
+            record_type: DNS record type to check (default: CNAME)
+            
+        Returns:
+            List[Dict[str, Any]]: List of cloud service associations found
+        """
+        findings = []
+        
         try:
-            for protocol in ['https', 'http']:
-                try:
-                    response = requests.get(
-                        f"{protocol}://{subdomain}",
-                        timeout=self.resolver.timeout,
-                        allow_redirects=False
-                    )
-                    
-                    # Check response headers for cloud indicators
-                    cloud_headers = {
-                        'x-amz-': 'AWS',
-                        'x-azure-': 'Azure',
-                        'x-goog-': 'GCP'
-                    }
-                    
-                    for header_prefix, provider in cloud_headers.items():
-                        for header in response.headers:
-                            if header.lower().startswith(header_prefix):
-                                result.add_finding({
-                                    'title': f"{provider} Headers Detected",
-                                    'description': f"Found cloud service headers on {subdomain}",
-                                    'risk_level': "Info",
-                                    'details': {
-                                        'subdomain': subdomain,
-                                        'protocol': protocol,
-                                        'provider': provider,
-                                        'headers': {
-                                            k: v for k, v in response.headers.items()
-                                            if k.lower().startswith(header_prefix)
-                                        }
-                                    },
-                                    'recommendations': [
-                                        'Review exposed headers',
-                                        'Configure security headers',
-                                        'Minimize information disclosure'
-                                    ]
-                                })
-                    break  # Stop after first successful connection
-                except:
-                    continue
-                    
+            logging.info(f"Checking {record_type} records for {domain}")
+            answers = dns.resolver.resolve(domain, record_type)
+            
+            for rdata in answers:
+                target = str(rdata.target if record_type == 'CNAME' else rdata).rstrip('.')
+                logging.debug(f"Found {record_type} record: {target}")
+                
+                # Check against each cloud provider's patterns
+                for provider, data in self.cloud_patterns.items():
+                    for service, pattern in data['services'].items():
+                        try:
+                            if re.search(pattern, target, re.IGNORECASE):
+                                finding = {
+                                    'domain': domain,
+                                    'target': target,
+                                    'provider': provider,
+                                    'service': service,
+                                    'record_type': record_type,
+                                    'description': f'Found {provider.upper()} {service} resource'
+                                }
+                                logging.info(f"Found cloud association: {finding['description']}")
+                                findings.append(finding)
+                        except re.error as e:
+                            logging.error(f"Invalid regex pattern for {provider} {service}: {str(e)}")
+                            
+        except dns.resolver.NXDOMAIN:
+            logging.debug(f"Domain {domain} does not exist")
+        except dns.resolver.NoAnswer:
+            logging.debug(f"No {record_type} records found for {domain}")
+        except dns.resolver.Timeout:
+            logging.warning(f"DNS query timeout for {domain}")
+        except dns.resolver.NoNameservers:
+            logging.warning(f"No nameservers available for {domain}")
         except Exception as e:
-            result.add_warning(f"Error checking HTTP endpoint for {subdomain}: {str(e)}")
+            logging.error(f"Error checking {domain}: {str(e)}")
+            
+        return findings
+
+    def check_ip_ranges(self, domain: str) -> List[Dict[str, Any]]:
+        """
+        Check if domain IP addresses belong to cloud provider ranges.
+        
+        Args:
+            domain: Domain to check
+            
+        Returns:
+            List[Dict[str, Any]]: List of cloud IP range matches
+        """
+        findings = []
+        
+        # Cloud provider IP ranges
+        # These are example ranges - in production, these should be regularly updated
+        cloud_ranges = {
+            'aws': [
+                '3.0.0.0/15',
+                '3.2.0.0/24',
+                '13.32.0.0/15',
+                '13.35.0.0/16',
+                '52.95.245.0/24',
+                '54.240.0.0/18'
+            ],
+            'azure': [
+                '13.64.0.0/11',
+                '13.96.0.0/13',
+                '13.104.0.0/14',
+                '20.33.0.0/16',
+                '20.34.0.0/15',
+                '20.36.0.0/14'
+            ],
+            'gcp': [
+                '8.8.4.0/24',
+                '8.8.8.0/24',
+                '34.64.0.0/10',
+                '34.128.0.0/10',
+                '35.184.0.0/13',
+                '35.192.0.0/14'
+            ]
+        }
+        
+        try:
+            logging.info(f"Checking IP ranges for {domain}")
+            answers = dns.resolver.resolve(domain, 'A')
+            
+            for rdata in answers:
+                ip = str(rdata)
+                logging.debug(f"Found IP: {ip}")
+                
+                # Check each provider's ranges
+                for provider, ranges in cloud_ranges.items():
+                    for ip_range in ranges:
+                        try:
+                            network = ipaddress.ip_network(ip_range)
+                            if ipaddress.ip_address(ip) in network:
+                                finding = {
+                                    'domain': domain,
+                                    'ip': ip,
+                                    'provider': provider,
+                                    'ip_range': ip_range,
+                                    'description': f'IP address belongs to {provider.upper()} range'
+                                }
+                                logging.info(f"Found IP in cloud range: {finding['description']}")
+                                findings.append(finding)
+                                break  # Found a match, no need to check other ranges for this provider
+                        except ValueError as e:
+                            logging.error(f"Invalid IP or network: {str(e)}")
+                
+        except dns.resolver.NXDOMAIN:
+            logging.debug(f"Domain {domain} does not exist")
+        except dns.resolver.NoAnswer:
+            logging.debug(f"No A records found for {domain}")
+        except dns.resolver.Timeout:
+            logging.warning(f"DNS query timeout for {domain}")
+        except dns.resolver.NoNameservers:
+            logging.warning(f"No nameservers available for {domain}")
+        except Exception as e:
+            logging.error(f"Error checking IP ranges for {domain}: {str(e)}")
+            
+        return findings
+
+    def run(self, args: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Run the cloud enumeration scan.
+        
+        Args:
+            args: Tool arguments including domain to scan
+            
+        Returns:
+            List[Dict[str, Any]]: List of findings
+        """
+        domain = args['domain']
+        subdomains = args.get('subdomains', [])
+        
+        if not subdomains:
+            # If no subdomains provided, at least check the main domain
+            subdomains = [domain]
+        
+        # Track unique findings to avoid duplicates
+        seen_findings = set()
+        
+        for subdomain in subdomains:
+            # Check CNAME records
+            cname_findings = self.check_cloud_association(subdomain, 'CNAME')
+            for finding in cname_findings:
+                finding_key = f"{finding['domain']}:{finding['provider']}:{finding['service']}"
+                if finding_key not in seen_findings:
+                    seen_findings.add(finding_key)
+                    self.findings.append(finding)
+            
+            # Check A records
+            a_findings = self.check_cloud_association(subdomain, 'A')
+            for finding in a_findings:
+                finding_key = f"{finding['domain']}:{finding['provider']}:{finding['service']}"
+                if finding_key not in seen_findings:
+                    seen_findings.add(finding_key)
+                    self.findings.append(finding)
+            
+            # Check IP ranges
+            ip_findings = self.check_ip_ranges(subdomain)
+            for finding in ip_findings:
+                finding_key = f"{finding['domain']}:{finding['provider']}:{finding['service']}"
+                if finding_key not in seen_findings:
+                    seen_findings.add(finding_key)
+                    self.findings.append(finding)
+        
+        return self.findings
 
 def main():
-    """Entry point for cloud enumerator"""
-    tool = CloudEnumerator()
-    return tool.main()
+    """Main function for standalone usage."""
+    tool = CloudEnumTool()
+    args = {'domain': 'example.com'}
+    findings = tool.run(args)
+    for finding in findings:
+        print(f"[{finding['provider'].upper()}] {finding['description']}")
+        print(f"Domain: {finding['domain']}")
+        print(f"Service: {finding['service']}")
+        print(f"Target: {finding['target']}")
+        print("---")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main() 
